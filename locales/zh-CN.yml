@@ -420,10 +420,15 @@ permission.agent_asks_for_permission: 智能体正在请求权限
 permission.agent_wants_to: 智能体想要执行 %{action}
 common.close: 关闭
 common.default: 默认
+composer.no_providers: 请安装或启用一个服务商后再发送
 models.none_found: 未找到模型
 models.favorite_hint: 为模型加星标即可固定在这里
 models.loading: 正在加载模型…
 models.none_reported: 此服务商未提供任何模型
+models.no_providers: 无可用服务商
+models.no_providers_title: 没有可用的服务商
+models.no_providers_description: 请安装一个智能体 CLI，或在服务商设置中重新启用。
+models.open_provider_settings: 打开服务商设置
 models.choose: 选择模型
 models.favorites: 收藏
 models.add_favorite: 添加到收藏

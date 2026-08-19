@@ -60,7 +60,10 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
             claude_reasoning_model("claude-opus-4-5", "Claude Opus 4.5"),
             claude_long_context(claude_ultracode_model("claude-sonnet-5", "Claude Sonnet 5"))
                 .default(),
-            claude_long_context(claude_reasoning_model("claude-sonnet-4-6", "Claude Sonnet 4.6")),
+            claude_long_context(claude_reasoning_model(
+                "claude-sonnet-4-6",
+                "Claude Sonnet 4.6",
+            )),
             ProviderModel::new("claude-haiku-4-5", "Claude Haiku 4.5"),
         ],
         // Cursor's full catalog is account-specific and exposed by the
@@ -705,8 +708,7 @@ fn parse_pi_model_response(
         .collect()
 }
 
-const PI_THINKING_LEVELS: [&str; 7] =
-    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const PI_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 fn pi_reasoning_options(dialect: PiDialect, model: &Value) -> Vec<ProviderModelOption> {
     if model.get("reasoning").and_then(Value::as_bool) != Some(true) {
@@ -716,10 +718,7 @@ fn pi_reasoning_options(dialect: PiDialect, model: &Value) -> Vec<ProviderModelO
         // Oh My Pi advertises the levels a model actually honors. `off` is
         // never in that list because it bypasses provider mapping entirely,
         // but it is always accepted.
-        let Some(efforts) = model
-            .pointer("/thinking/efforts")
-            .and_then(Value::as_array)
-        else {
+        let Some(efforts) = model.pointer("/thinking/efforts").and_then(Value::as_array) else {
             return Vec::new();
         };
         return PI_THINKING_LEVELS
@@ -1541,7 +1540,11 @@ done
         let models = discover_pi_models(&binary, PiDialect::OhMyPi);
         assert!(!models.is_empty(), "Oh My Pi reported no models");
         for model in &models {
-            assert!(model.id.contains('/'), "{} is not a provider/model slug", model.id);
+            assert!(
+                model.id.contains('/'),
+                "{} is not a provider/model slug",
+                model.id
+            );
             assert!(!model.name.trim().is_empty());
         }
         assert_eq!(

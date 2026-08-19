@@ -528,10 +528,7 @@ fn perform_provider_rewind(
                 .cursor;
             Ok((Some(cursor), None, None))
         }
-        ProviderKind::Codex
-        | ProviderKind::DeepSeek
-        | ProviderKind::OhMyPi
-        | ProviderKind::Pi => {
+        ProviderKind::Codex | ProviderKind::DeepSeek | ProviderKind::OhMyPi | ProviderKind::Pi => {
             let mut prepared_driver = None;
             let driver = if let Some(driver) = request.driver.as_ref() {
                 driver.clone()
@@ -1523,6 +1520,23 @@ impl Waku {
                 .is_some_and(|probe| probe.installed)
     }
 
+    /// Whether the model picker has no provider left to offer — nothing
+    /// detected on this machine, or everything switched off — so the
+    /// composer's trigger, the picker panel, and the send button all swap to
+    /// their unavailable state.
+    pub(super) fn model_picker_has_no_providers(&self) -> bool {
+        let locked_provider = self
+            .selected_session()
+            .filter(|session| !session.messages.is_empty())
+            .map(|session| session.provider);
+        super::composer::picker_has_no_providers(
+            &self.probes,
+            &self.state.disabled_providers,
+            locked_provider,
+            self.provider_detection_checked_at.is_some(),
+        )
+    }
+
     pub(super) fn model_for_session<'a>(&'a self, session: &'a AgentSession) -> Option<&'a str> {
         session.model.as_deref().or_else(|| {
             self.provider_probe(session.provider)
@@ -1847,10 +1861,7 @@ impl Waku {
         }
         let driver_start = if matches!(
             provider,
-            ProviderKind::Codex
-                | ProviderKind::DeepSeek
-                | ProviderKind::OhMyPi
-                | ProviderKind::Pi
+            ProviderKind::Codex | ProviderKind::DeepSeek | ProviderKind::OhMyPi | ProviderKind::Pi
         ) && driver.is_none()
         {
             match self.driver_start_request_for_session(&source, source_workspace_path.clone()) {

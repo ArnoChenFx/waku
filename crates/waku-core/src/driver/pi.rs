@@ -259,9 +259,8 @@ impl PiDriver {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = crate::command_env::spawn(command).with_context(|| {
-            format!("failed to start `{} --mode rpc`", binary.display())
-        })?;
+        let mut child = crate::command_env::spawn(command)
+            .with_context(|| format!("failed to start `{} --mode rpc`", binary.display()))?;
         let stdin = child
             .stdin
             .take()
@@ -306,13 +305,12 @@ impl PiDriver {
                                             ),
                                             Ok(None) => {}
                                             Err(error) => {
-                                                let _ = reader_events.send(DriverEvent::Error(
-                                                    tr!(
+                                                let _ =
+                                                    reader_events.send(DriverEvent::Error(tr!(
                                                         "errors.provider_transport_read",
                                                         provider = flavor.display_name(),
                                                         error = error
-                                                    ),
-                                                ));
+                                                    )));
                                             }
                                         }
                                     }
@@ -757,7 +755,12 @@ impl DriverControl for PiDriver {
                 turns,
                 response: response_tx,
             })
-            .with_context(|| format!("{} driver stopped before rollback", self.flavor.display_name()))?;
+            .with_context(|| {
+                format!(
+                    "{} driver stopped before rollback",
+                    self.flavor.display_name()
+                )
+            })?;
         response_rx
             .recv_timeout(Duration::from_secs(60))
             .with_context(|| {
@@ -777,7 +780,12 @@ impl DriverControl for PiDriver {
                 turns_to_remove,
                 response: response_tx,
             })
-            .with_context(|| format!("{} driver stopped before forking", self.flavor.display_name()))?;
+            .with_context(|| {
+                format!(
+                    "{} driver stopped before forking",
+                    self.flavor.display_name()
+                )
+            })?;
         response_rx
             .recv_timeout(Duration::from_secs(60))
             .with_context(|| {
@@ -1150,8 +1158,11 @@ fn clone_ohmypi_session(
                 }
             })
             .map_err(|error| format!("could not read the Oh My Pi session copy: {error}"))?;
-        write_json_line(&mut stdin, &json!({"id": "waku-clone", "type": "get_state"}))
-            .map_err(|error| format!("could not ask Oh My Pi for the copied session: {error}"))?;
+        write_json_line(
+            &mut stdin,
+            &json!({"id": "waku-clone", "type": "get_state"}),
+        )
+        .map_err(|error| format!("could not ask Oh My Pi for the copied session: {error}"))?;
         let state = rx
             .recv_timeout(CLONE_TIMEOUT)
             .map_err(|_| "timed out waiting for Oh My Pi to copy the session".to_owned())?;
@@ -1362,10 +1373,7 @@ fn handle_pi_message(
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .unwrap_or_else(|| {
-                        format!(
-                            "{} exhausted its automatic retries",
-                            flavor.display_name()
-                        )
+                        format!("{} exhausted its automatic retries", flavor.display_name())
                     });
                 let _ = events.send(DriverEvent::Error(message));
             }
@@ -1677,7 +1685,14 @@ mod tests {
             json!({"type": "agent_end", "willRetry": false}),
             json!({"type": "agent_settled"}),
         ] {
-            handle_pi_message(PiFlavor::Pi, value, &pending, &commands, &events, &mut state);
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
         }
 
         assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
@@ -1757,7 +1772,13 @@ mod tests {
             }
         }
         assert!(
-            matches!(cursor, Some(ProviderResumeCursor::OhMyPi { session_file: Some(_), .. })),
+            matches!(
+                cursor,
+                Some(ProviderResumeCursor::OhMyPi {
+                    session_file: Some(_),
+                    ..
+                })
+            ),
             "Oh My Pi should report its own cursor with a session file, got {cursor:?}"
         );
 
@@ -2079,7 +2100,14 @@ mod tests {
             }),
             json!({"type": "agent_settled"}),
         ] {
-            handle_pi_message(PiFlavor::Pi, value, &pending, &commands, &events, &mut state);
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
         }
 
         assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
@@ -2112,7 +2140,14 @@ mod tests {
             json!({"type": "auto_retry_end", "success": true}),
             json!({"type": "agent_settled"}),
         ] {
-            handle_pi_message(PiFlavor::Pi, value, &pending, &commands, &events, &mut state);
+            handle_pi_message(
+                PiFlavor::Pi,
+                value,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
         }
 
         assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));

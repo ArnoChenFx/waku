@@ -863,6 +863,9 @@ common.close:
 common.default:
   en: Default
 
+composer.no_providers:
+  en: Install or switch on a provider to send
+
 models.none_found:
   en: No models found
 models.favorite_hint:
@@ -871,6 +874,14 @@ models.loading:
   en: Loading models…
 models.none_reported:
   en: No models reported by this provider
+models.no_providers:
+  en: No providers
+models.no_providers_title:
+  en: No providers available
+models.no_providers_description:
+  en: Install an agent CLI, or switch one back on in Provider settings.
+models.open_provider_settings:
+  en: Open Provider Settings
 models.choose:
   en: Choose model
 models.favorites:

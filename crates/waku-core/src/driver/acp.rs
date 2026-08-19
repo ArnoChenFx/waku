@@ -774,9 +774,7 @@ fn send_prompt(
             // waits on Kimi's records.
             let native_failure = wire_offset
                 .filter(|_| !stream_state.lock().produced_content)
-                .and_then(|offset| {
-                    crate::kimi_session::turn_failure(&native_session_id, offset)
-                });
+                .and_then(|offset| crate::kimi_session::turn_failure(&native_session_id, offset));
             let success = finish_prompt(result, native_failure, &callback_events);
             if provider == ProviderKind::Grok && success {
                 start_grok_title_refresh(
@@ -1245,7 +1243,13 @@ fn handle_session_update(
     let kind = update.get("sessionUpdate").and_then(Value::as_str);
     if matches!(
         kind,
-        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan")
+        Some(
+            "agent_message_chunk"
+                | "agent_thought_chunk"
+                | "tool_call"
+                | "tool_call_update"
+                | "plan"
+        )
     ) {
         state.produced_content = true;
     }
