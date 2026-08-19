@@ -1043,6 +1043,11 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, HashMap::new()))
             }
+            // Unreachable through the UI, which hides branching for providers
+            // that answer `supports_conversation_fork` with false.
+            ProviderKind::Kimi => {
+                bail!("Kimi Code cannot branch a conversation at a turn")
+            }
         }
     }
 
@@ -1238,6 +1243,11 @@ impl WakuBackend {
                 HashMap::new(),
                 false,
             )),
+            // Unreachable through the UI, which hides rewinding for providers
+            // that answer `supports_conversation_rollback` with false.
+            ProviderKind::Kimi => {
+                bail!("Kimi Code cannot rewind a conversation to a turn")
+            }
         }
     }
 

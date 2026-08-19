@@ -76,10 +76,10 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         ProviderKind::Grok => {
             vec![ProviderModel::new("grok-build", "Grok Build").default()]
         }
-        // Pi and Oh My Pi both take their catalog from the user's configured
-        // LLM providers. A fabricated fallback would make unavailable models
-        // look selectable.
-        ProviderKind::OhMyPi | ProviderKind::Pi => Vec::new(),
+        // Pi, Oh My Pi, and Kimi Code all take their catalog from the user's
+        // configured LLM providers. A fabricated fallback would make
+        // unavailable models look selectable.
+        ProviderKind::Kimi | ProviderKind::OhMyPi | ProviderKind::Pi => Vec::new(),
     }
 }
 
@@ -120,6 +120,7 @@ pub fn discover_catalog(
         ProviderKind::DeepSeek => discover_deepseek_catalog(binary),
         ProviderKind::OpenCode => (discover_opencode_models(binary), None),
         ProviderKind::Grok => (discover_grok_models(binary), None),
+        ProviderKind::Kimi => (discover_kimi_models(binary), None),
         ProviderKind::Pi => (discover_pi_models(binary, PiDialect::Pi), None),
         ProviderKind::OhMyPi => (discover_pi_models(binary, PiDialect::OhMyPi), None),
     };
@@ -449,6 +450,104 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
             let mut model = ProviderModel::new(id, display_name_from_slug(id));
             model.is_default = default_model.as_deref() == Some(id);
             Some(model)
+        })
+        .collect()
+}
+
+/// Kimi Code resolves models through its own provider config, which covers the
+/// managed Kimi plan as well as any registry the user imported. `--json` is the
+/// catalog itself; it omits the configured default, so the human-readable
+/// listing supplies that single field.
+fn discover_kimi_models(binary: &Path) -> Vec<ProviderModel> {
+    let mut command = crate::command_env::command(binary);
+    let command = command.args(["provider", "list", "--json"]);
+    let Ok(output) = crate::command_env::output(command) else {
+        return Vec::new();
+    };
+    let Ok(catalog) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return Vec::new();
+    };
+    parse_kimi_models(&catalog, discover_kimi_default_model(binary).as_deref())
+}
+
+fn discover_kimi_default_model(binary: &Path) -> Option<String> {
+    let mut command = crate::command_env::command(binary);
+    let command = command.args(["provider", "list"]);
+    let output = crate::command_env::output(command).ok()?;
+    parse_kimi_default_model(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_kimi_default_model(output: &str) -> Option<String> {
+    strip_ansi(output).lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("Default model:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    })
+}
+
+fn parse_kimi_models(catalog: &Value, default_model: Option<&str>) -> Vec<ProviderModel> {
+    catalog
+        .get("models")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(id, _)| !id.trim().is_empty())
+        .map(|(id, value)| {
+            // Only the managed Kimi models carry a display name. An imported
+            // registry names its models by bare id, and the alias prefix is
+            // what tells two providers' catalogs apart in the picker.
+            let (alias_provider, alias_model) = id
+                .split_once('/')
+                .map_or((None, id.as_str()), |(prefix, rest)| (Some(prefix), rest));
+            let name = value
+                .get("displayName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    display_name_from_slug(
+                        value
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|model| !model.is_empty())
+                            .unwrap_or(alias_model),
+                    )
+                });
+            let mut model = ProviderModel::new(id, name);
+            if let Some(prefix) = alias_provider.filter(|prefix| !prefix.trim().is_empty()) {
+                model = model.sub_provider(display_name_from_slug(prefix));
+            }
+            model.is_default = default_model == Some(id.as_str());
+            // Only the K3 family exposes thinking levels; the rest report a
+            // single always-on state that is not a user choice.
+            model.reasoning_efforts = value
+                .get("supportEfforts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
+                .map(|effort| ProviderModelOption::new(effort, reasoning_effort_label(effort)))
+                .collect();
+            if !model.reasoning_efforts.is_empty() {
+                model.default_reasoning_effort = value
+                    .get("defaultEffort")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|effort| {
+                        model
+                            .reasoning_efforts
+                            .iter()
+                            .any(|option| option.id == *effort)
+                    })
+                    .map(str::to_owned);
+            }
+            model
         })
         .collect()
 }
@@ -1216,6 +1315,68 @@ mod tests {
         assert!(models[0].is_default);
         assert_eq!(models[1].id, "grok-4.5");
         assert!(!models[1].is_default);
+    }
+
+    #[test]
+    #[ignore = "requires an installed Kimi Code CLI"]
+    fn installed_kimi_reports_models_and_a_default() {
+        let binary =
+            crate::command_env::find_executable("kimi").expect("Kimi Code CLI is not installed");
+        let models = discover_kimi_models(&binary);
+        assert!(
+            !models.is_empty(),
+            "the installed Kimi Code CLI reported no models"
+        );
+        assert!(
+            models.iter().any(|model| model.is_default),
+            "no Kimi model was marked as the configured default"
+        );
+    }
+
+    #[test]
+    fn parses_kimi_catalog_across_providers() {
+        let catalog = json!({
+            "providers": {"managed:kimi-code": {}, "moonshot-cn": {}},
+            "models": {
+                "kimi-code/k3": {
+                    "provider": "managed:kimi-code",
+                    "model": "k3",
+                    "displayName": "K3",
+                    "supportEfforts": ["low", "high", "max"],
+                    "defaultEffort": "high"
+                },
+                "moonshot-cn/kimi-k2.6": {"provider": "moonshot-cn", "model": "kimi-k2.6"}
+            }
+        });
+
+        let models = parse_kimi_models(&catalog, Some("moonshot-cn/kimi-k2.6"));
+
+        assert_eq!(models.len(), 2);
+        let k3 = &models[0];
+        assert_eq!(k3.id, "kimi-code/k3");
+        assert_eq!(k3.name, "K3");
+        assert_eq!(k3.sub_provider.as_deref(), Some("Kimi Code"));
+        assert!(!k3.is_default);
+        assert_eq!(k3.reasoning_efforts.len(), 3);
+        assert_eq!(k3.default_reasoning_effort.as_deref(), Some("high"));
+        // No display name: the bare model id is the readable fallback, not the
+        // provider-qualified alias.
+        let k2 = &models[1];
+        assert_eq!(k2.name, "Kimi K2.6");
+        assert!(k2.is_default);
+        assert!(k2.reasoning_efforts.is_empty());
+    }
+
+    #[test]
+    fn reads_kimi_default_model_from_the_provider_listing() {
+        assert_eq!(
+            parse_kimi_default_model(
+                "managed:kimi-code  type=kimi  models=4\n\nDefault model: kimi-code/k3\n"
+            )
+            .as_deref(),
+            Some("kimi-code/k3")
+        );
+        assert!(parse_kimi_default_model("no default here").is_none());
     }
 
     #[test]

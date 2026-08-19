@@ -18,12 +18,13 @@ pub enum ProviderKind {
     DeepSeek,
     OpenCode,
     Grok,
+    Kimi,
     OhMyPi,
     Pi,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Amp,
         Self::Claude,
         Self::Codex,
@@ -31,6 +32,7 @@ impl ProviderKind {
         Self::DeepSeek,
         Self::OpenCode,
         Self::Grok,
+        Self::Kimi,
         Self::OhMyPi,
         Self::Pi,
     ];
@@ -44,6 +46,7 @@ impl ProviderKind {
             Self::DeepSeek => "deepseek",
             Self::OpenCode => "opencode",
             Self::Grok => "grok",
+            Self::Kimi => "kimi",
             Self::OhMyPi => "ohmypi",
             Self::Pi => "pi",
         }
@@ -58,6 +61,7 @@ impl ProviderKind {
             Self::DeepSeek => "DeepSeek Harness",
             Self::OpenCode => "OpenCode",
             Self::Grok => "Grok Build",
+            Self::Kimi => "Kimi Code",
             Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
         }
@@ -72,6 +76,7 @@ impl ProviderKind {
             Self::DeepSeek => "DeepSeek",
             Self::OpenCode => "OpenCode",
             Self::Grok => "Grok",
+            Self::Kimi => "Kimi",
             Self::OhMyPi => "Oh My Pi",
             Self::Pi => "Pi",
         }
@@ -88,11 +93,16 @@ impl ProviderKind {
             Self::DeepSeek => "dsh",
             Self::OpenCode => "opencode",
             Self::Grok => "grok",
+            Self::Kimi => "kimi",
             Self::OhMyPi => "omp",
             Self::Pi => "pi",
         }
     }
 
+    /// Kimi Code is deliberately absent from this list and from
+    /// [`Self::supports_conversation_fork`]: its ACP `session/fork` copies a
+    /// whole session and takes no turn count, so there is no way to reproduce
+    /// Waku's "drop the last N turns" semantics without corrupting history.
     pub fn supports_conversation_rollback(self) -> bool {
         matches!(
             self,
@@ -131,6 +141,7 @@ impl ProviderKind {
                 | Self::DeepSeek
                 | Self::OpenCode
                 | Self::Grok
+                | Self::Kimi
                 | Self::OhMyPi
                 | Self::Pi
         )
@@ -171,6 +182,9 @@ pub enum ProviderResumeCursor {
     Grok {
         session_id: String,
     },
+    Kimi {
+        session_id: String,
+    },
     OhMyPi {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,6 +216,7 @@ impl ProviderResumeCursor {
             ProviderKind::DeepSeek => Self::DeepSeek { session_id: id },
             ProviderKind::OpenCode => Self::OpenCode { session_id: id },
             ProviderKind::Grok => Self::Grok { session_id: id },
+            ProviderKind::Kimi => Self::Kimi { session_id: id },
             ProviderKind::OhMyPi => Self::OhMyPi {
                 session_id: id,
                 session_file: None,
@@ -222,6 +237,7 @@ impl ProviderResumeCursor {
             Self::DeepSeek { .. } => ProviderKind::DeepSeek,
             Self::OpenCode { .. } => ProviderKind::OpenCode,
             Self::Grok { .. } => ProviderKind::Grok,
+            Self::Kimi { .. } => ProviderKind::Kimi,
             Self::OhMyPi { .. } => ProviderKind::OhMyPi,
             Self::Pi { .. } => ProviderKind::Pi,
         }
@@ -235,6 +251,7 @@ impl ProviderResumeCursor {
             | Self::DeepSeek { session_id }
             | Self::OpenCode { session_id }
             | Self::Grok { session_id }
+            | Self::Kimi { session_id }
             | Self::OhMyPi { session_id, .. }
             | Self::Pi { session_id, .. } => session_id,
             Self::Codex { thread_id } => thread_id,

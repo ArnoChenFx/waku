@@ -203,7 +203,7 @@ fn builtin_claude_commands() -> Vec<SlashCommand> {
 /// a template written once works over any transport. Native files scan
 /// first, so they win a same-scope name collision. Live processes may add
 /// more at runtime ([`merge_reported_commands`]): Claude's init handshake
-/// and ACP's `available_commands_update` for Cursor and Grok.
+/// and ACP's `available_commands_update` for Cursor, Grok, and Kimi Code.
 pub fn discover_slash_commands(provider: ProviderKind, project_root: &Path) -> Vec<SlashCommand> {
     let home = dirs::home_dir();
     let claude_config_dir = std::env::var("CLAUDE_CONFIG_DIR")
@@ -326,8 +326,10 @@ pub fn discover_slash_commands(provider: ProviderKind, project_root: &Path) -> V
                 scan_skill_files(&home.join(".config/agents/skills"), &mut commands);
             }
         }
-        // Harness commands are session-scoped and reported live by the Host.
-        ProviderKind::DeepSeek | ProviderKind::Grok => {}
+        // Harness commands are session-scoped and reported live by the Host,
+        // and Kimi Code likewise publishes its whole command set over ACP
+        // rather than from files Waku could scan.
+        ProviderKind::DeepSeek | ProviderKind::Grok | ProviderKind::Kimi => {}
     }
     // The cross-tool skill standard, read by Amp and OpenCode among others;
     // Waku lists it for every provider.

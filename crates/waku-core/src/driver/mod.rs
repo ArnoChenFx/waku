@@ -209,10 +209,10 @@ pub(crate) fn start_local(
             options,
             events,
         )?),
-        // Cursor and Grok both serve a long-lived ACP session, which is the only
-        // way their Supervised mode can actually ask the user rather than
-        // silently forcing or denying.
-        ProviderKind::Cursor | ProviderKind::Grok => {
+        // Cursor, Grok, and Kimi Code all serve a long-lived ACP session, which
+        // is the only way their Supervised mode can actually ask the user rather
+        // than silently forcing or denying.
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Kimi => {
             Arc::new(acp::AcpDriver::start(provider, options, events)?)
         }
         ProviderKind::DeepSeek => Arc::new(deepseek::DeepSeekDriver::start(options, events)?),

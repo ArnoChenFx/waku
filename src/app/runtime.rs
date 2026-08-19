@@ -550,6 +550,12 @@ fn perform_provider_rewind(
             let cursor = driver.rollback(request.rollback_turns)?;
             Ok((cursor, None, prepared_driver))
         }
+        // Unreachable through the UI, which hides rewinding for providers that
+        // answer `supports_conversation_rollback` with false.
+        ProviderKind::Kimi => Err(anyhow::anyhow!(tr!(
+            "errors.provider_turn_branching_unsupported",
+            provider = "Kimi Code"
+        ))),
     }
 }
 
@@ -835,6 +841,12 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                 let (cursor, prepared_driver) = fork_response_with_driver(&mut request)?;
                 Ok((cursor, None, prepared_driver))
             }
+            // Unreachable through the UI, which hides branching for providers
+            // that answer `supports_conversation_fork` with false.
+            ProviderKind::Kimi => anyhow::bail!(tr!(
+                "errors.provider_turn_branching_unsupported",
+                provider = "Kimi Code"
+            )),
         }
     })();
 
