@@ -185,6 +185,9 @@ fn builtin_claude_commands() -> Vec<SlashCommand> {
 /// - Cursor: `.cursor/commands` in the project and home, expanded by Waku.
 /// - Pi: prompt templates in `.pi/prompts` and `~/.pi/agent/prompts`,
 ///   expanded by Waku, plus skills in `.pi/skills` and `~/.pi/agent/skills`.
+/// - Oh My Pi: the same layout under its own root — commands in
+///   `.omp/commands` and `~/.omp/agent/commands`, skills in `.omp/skills`
+///   and `~/.omp/agent/skills`.
 /// - Amp registers commands through TypeScript plugins and Grok publishes no
 ///   file convention, so neither has a native command scan; Amp's skills in
 ///   `~/.config/agents/skills` are listed.
@@ -298,6 +301,24 @@ pub fn discover_slash_commands(provider: ProviderKind, project_root: &Path) -> V
                     &mut commands,
                 );
                 scan_skill_files(&home.join(".pi/agent/skills"), &mut commands);
+            }
+        }
+        ProviderKind::OhMyPi => {
+            scan_command_files(
+                &project_root.join(".omp/commands"),
+                CommandScope::Project,
+                true,
+                &mut commands,
+            );
+            scan_skill_files(&project_root.join(".omp/skills"), &mut commands);
+            if let Some(home) = home.as_deref() {
+                scan_command_files(
+                    &home.join(".omp/agent/commands"),
+                    CommandScope::User,
+                    true,
+                    &mut commands,
+                );
+                scan_skill_files(&home.join(".omp/agent/skills"), &mut commands);
             }
         }
         ProviderKind::Amp => {
@@ -1256,6 +1277,7 @@ mod tests {
             (ProviderKind::Cursor, ".cursor/skills"),
             (ProviderKind::OpenCode, ".opencode/skills"),
             (ProviderKind::Pi, ".pi/skills"),
+            (ProviderKind::OhMyPi, ".omp/skills"),
         ] {
             let skill_dir = root.join(dir).join("native-skill");
             std::fs::create_dir_all(&skill_dir).unwrap();

@@ -330,6 +330,7 @@ const PROVIDER_ICONS: Record<ProviderKind, string> = {
   deepSeek: 'i-waku-provider-deepseek',
   openCode: 'i-waku-provider-opencode',
   grok: 'i-waku-provider-grok',
+  ohMyPi: 'i-waku-provider-ohmypi',
   pi: 'i-waku-provider-pi',
 }
 
@@ -346,6 +347,7 @@ export const PROVIDERS: Array<{
   { id: 'deepSeek', name: 'DeepSeek Harness', shortName: 'DeepSeek', command: 'dsh' },
   { id: 'openCode', name: 'OpenCode', shortName: 'OpenCode', command: 'opencode' },
   { id: 'grok', name: 'Grok Build', shortName: 'Grok', command: 'grok' },
+  { id: 'ohMyPi', name: 'Oh My Pi', shortName: 'Oh My Pi', command: 'omp' },
   { id: 'pi', name: 'Pi', shortName: 'Pi', command: 'pi' },
 ]
 

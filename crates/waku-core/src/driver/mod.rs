@@ -203,7 +203,12 @@ pub(crate) fn start_local(
 ) -> anyhow::Result<DriverHandle> {
     let inner: Arc<dyn DriverControl> = match provider {
         ProviderKind::Codex => Arc::new(codex::CodexDriver::start(options, events)?),
-        ProviderKind::Pi => Arc::new(pi::PiDriver::start(options, events)?),
+        ProviderKind::Pi => Arc::new(pi::PiDriver::start(pi::PiFlavor::Pi, options, events)?),
+        ProviderKind::OhMyPi => Arc::new(pi::PiDriver::start(
+            pi::PiFlavor::OhMyPi,
+            options,
+            events,
+        )?),
         // Cursor and Grok both serve a long-lived ACP session, which is the only
         // way their Supervised mode can actually ask the user rather than
         // silently forcing or denying.

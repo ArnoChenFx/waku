@@ -984,7 +984,10 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, fork.message_ids))
             }
-            ProviderKind::Codex | ProviderKind::DeepSeek | ProviderKind::Pi => Ok((
+            ProviderKind::Codex
+            | ProviderKind::DeepSeek
+            | ProviderKind::OhMyPi
+            | ProviderKind::Pi => Ok((
                 self.fork_response_with_driver(source, cwd, turns_to_remove)?,
                 HashMap::new(),
             )),
@@ -1085,6 +1088,17 @@ impl WakuBackend {
                 ) =>
             {
                 bail!("Pi's native session file is unavailable");
+            }
+            ProviderKind::OhMyPi
+                if !matches!(
+                    source.provider_cursor.as_ref(),
+                    Some(ProviderResumeCursor::OhMyPi {
+                        session_file: Some(_),
+                        ..
+                    })
+                ) =>
+            {
+                bail!("Oh My Pi's native session file is unavailable");
             }
             _ => {}
         }
@@ -1216,7 +1230,10 @@ impl WakuBackend {
                 .cursor;
                 Ok((Some(cursor), HashMap::new(), false))
             }
-            ProviderKind::Codex | ProviderKind::DeepSeek | ProviderKind::Pi => Ok((
+            ProviderKind::Codex
+            | ProviderKind::DeepSeek
+            | ProviderKind::OhMyPi
+            | ProviderKind::Pi => Ok((
                 self.rollback_response_with_driver(source, cwd, binary, rollback_turns)?,
                 HashMap::new(),
                 false,

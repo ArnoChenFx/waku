@@ -1224,6 +1224,7 @@ function providerName(provider: AgentSession['provider']) {
       deepSeek: 'DeepSeek Harness',
       openCode: 'OpenCode',
       grok: 'Grok',
+      ohMyPi: 'Oh My Pi',
       pi: 'Pi',
     } as const
   )[provider]

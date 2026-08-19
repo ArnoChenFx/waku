@@ -323,6 +323,25 @@ fn agent_arguments(
             }
             return args;
         }
+        // Oh My Pi rejects unknown flags outright, so it gets its own list
+        // rather than Pi's: context files are `--no-rules`, and it has no
+        // prompt-template or project-trust switch to turn off.
+        ProviderKind::OhMyPi => {
+            push(&mut args, "--print");
+            push(&mut args, "--no-session");
+            push(&mut args, "--no-tools");
+            push(&mut args, "--no-rules");
+            push(&mut args, "--no-extensions");
+            push(&mut args, "--no-skills");
+            if let Some(model) = model {
+                push(&mut args, "--model");
+                push(&mut args, model);
+            }
+            if let Some(effort) = reasoning_effort {
+                push(&mut args, "--thinking");
+                push(&mut args, effort);
+            }
+        }
         ProviderKind::Pi => {
             push(&mut args, "--print");
             push(&mut args, "--no-session");
@@ -743,6 +762,13 @@ mod tests {
                     assert!(has(&args, "--print"));
                     assert!(has(&args, "--no-session"));
                     assert!(has(&args, "--no-tools"));
+                    assert!(has_pair(&args, "--thinking", "low"));
+                }
+                ProviderKind::OhMyPi => {
+                    assert!(has(&args, "--print"));
+                    assert!(has(&args, "--no-session"));
+                    assert!(has(&args, "--no-tools"));
+                    assert!(has(&args, "--no-rules"));
                     assert!(has_pair(&args, "--thinking", "low"));
                 }
             }

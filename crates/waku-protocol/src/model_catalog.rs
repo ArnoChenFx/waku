@@ -55,7 +55,10 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         ProviderKind::Cursor => {
             vec![ProviderModel::new("auto", tr!("model_option.auto")).default()]
         }
-        ProviderKind::DeepSeek | ProviderKind::OpenCode | ProviderKind::Pi => Vec::new(),
+        ProviderKind::DeepSeek
+        | ProviderKind::OpenCode
+        | ProviderKind::OhMyPi
+        | ProviderKind::Pi => Vec::new(),
         ProviderKind::Grok => vec![ProviderModel::new("grok-build", "Grok Build").default()],
     }
 }
