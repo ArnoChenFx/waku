@@ -16,7 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [0.1.10]
+
 - Add Kimi Code support
+- Add Oh My Pi support
+- Fix markdown table rendering
 
 ## [0.1.8]
 
