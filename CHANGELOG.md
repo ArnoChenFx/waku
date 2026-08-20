@@ -16,6 +16,9 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Highlight Markdown in the file editor, and toggle between source and a rendered preview
+- Add UI and code font size settings
+
 ## [0.1.10]
 
 - Add Kimi Code support
