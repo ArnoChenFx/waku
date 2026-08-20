@@ -36,28 +36,37 @@ const probe: ProviderProbeResult = {
 describe('provider probe cache', () => {
   test('restores a daemon-scoped model catalog and timestamp', () => {
     const storage = new MemoryStorage()
-    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, probe, 10_000)
+    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, '[]', probe, 10_000)
 
-    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, 20_000)).toEqual({
+    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, '[]', 20_000)).toEqual({
       binaryOverride: null,
+      extraArgs: '[]',
       data: probe,
       updatedAt: 10_000,
     })
-    expect(readProviderProbeCache(storage, 'ws://daemon-b', 'codex', null, 20_000)).toBeUndefined()
+    expect(readProviderProbeCache(storage, 'ws://daemon-b', 'codex', null, '[]', 20_000)).toBeUndefined()
   })
 
   test('does not reuse a catalog after its binary override changes', () => {
     const storage = new MemoryStorage()
-    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', '/opt/codex', probe, 10_000)
+    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', '/opt/codex', '[]', probe, 10_000)
 
-    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', '/other/codex', 20_000)).toBeUndefined()
-    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', undefined, 20_000)?.data).toEqual(probe)
+    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', '/other/codex', '[]', 20_000)).toBeUndefined()
+    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', undefined, '[]', 20_000)?.data).toEqual(probe)
+  })
+
+  test('does not reuse a catalog after its custom launch arguments change', () => {
+    const storage = new MemoryStorage()
+    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, '["--profile","work"]', probe, 10_000)
+
+    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, '[]', 20_000)).toBeUndefined()
+    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, undefined, 20_000)?.data).toEqual(probe)
   })
 
   test('ignores expired and malformed cache entries', () => {
     const storage = new MemoryStorage()
-    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, probe, 10_000)
-    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, 31 * 24 * 60 * 60 * 1_000)).toBeUndefined()
+    writeProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, '[]', probe, 10_000)
+    expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex', null, '[]', 31 * 24 * 60 * 60 * 1_000)).toBeUndefined()
 
     storage.setItem('waku.provider-probes.v1', '{bad json')
     expect(readProviderProbeCache(storage, 'ws://daemon-a', 'codex')).toBeUndefined()

@@ -82,7 +82,7 @@ impl PooledServer {
     }
 }
 
-type PoolKey = (PathBuf, PathBuf); // (binary, workspace directory)
+type PoolKey = (PathBuf, PathBuf, Vec<String>); // (binary, workspace directory, 自定义启动参数)
 
 enum PoolState {
     Vacant,
@@ -114,16 +114,26 @@ fn pool() -> &'static Mutex<HashMap<PoolKey, Arc<PoolSlot>>> {
 ///
 /// Blocking (process start plus health probe), so callers must already be off
 /// the UI thread — driver start on the background executor is.
-pub(crate) fn acquire(binary: &Path, cwd: &Path) -> anyhow::Result<PooledServer> {
-    acquire_with_start(binary, cwd, || OpenCodeServer::start(binary, cwd))
+pub(crate) fn acquire(
+    binary: &Path,
+    cwd: &Path,
+    extra_args: &[String],
+) -> anyhow::Result<PooledServer> {
+    acquire_with_start(
+        binary,
+        cwd,
+        extra_args,
+        || OpenCodeServer::start_with_env(binary, cwd, &[], extra_args),
+    )
 }
 
 fn acquire_with_start(
     binary: &Path,
     cwd: &Path,
+    extra_args: &[String],
     start: impl FnOnce() -> anyhow::Result<OpenCodeServer>,
 ) -> anyhow::Result<PooledServer> {
-    let key = (binary.to_path_buf(), cwd.to_path_buf());
+    let key = (binary.to_path_buf(), cwd.to_path_buf(), extra_args.to_vec());
     let slot = {
         let mut pool = pool().lock().unwrap();
         Arc::clone(pool.entry(key).or_default())
@@ -240,11 +250,11 @@ mod tests {
         let cwd = TestWorkspace::new();
 
         let first =
-            acquire(&binary, cwd.path()).expect("the first session should start the server");
+            acquire(&binary, cwd.path(), &[]).expect("the first session should start the server");
         let port = first.port;
         assert!(port_is_open(port), "the server should be listening");
 
-        let second = acquire(&binary, cwd.path()).expect("the second session should reuse it");
+        let second = acquire(&binary, cwd.path(), &[]).expect("the second session should reuse it");
         assert_eq!(second.port, port, "both sessions must share one process");
         assert!(Arc::ptr_eq(&first.inner, &second.inner));
 
@@ -270,7 +280,7 @@ mod tests {
         );
 
         let third =
-            acquire(&binary, cwd.path()).expect("a later session should start a fresh server");
+            acquire(&binary, cwd.path(), &[]).expect("a later session should start a fresh server");
         assert!(port_is_open(third.port));
     }
 
@@ -291,7 +301,7 @@ mod tests {
             let cwd = cwd.clone();
             thread::spawn(move || {
                 barrier.wait();
-                acquire_with_start(&binary, &cwd, || {
+                acquire_with_start(&binary, &cwd, &[], || {
                     starts.fetch_add(1, Ordering::Relaxed);
                     OpenCodeServer::start(&binary, &cwd)
                 })
@@ -350,11 +360,11 @@ mod tests {
             crate::command_env::find_executable("opencode").expect("opencode is not installed");
         let cwd = TestWorkspace::new();
 
-        let stale = acquire(&binary, cwd.path()).expect("the first server should start");
+        let stale = acquire(&binary, cwd.path(), &[]).expect("the first server should start");
         stale.shutdown(SERVER_EXIT_TIMEOUT);
         assert!(!stale.is_alive());
 
-        let replacement = acquire(&binary, cwd.path()).expect("the dead server should be replaced");
+        let replacement = acquire(&binary, cwd.path(), &[]).expect("the dead server should be replaced");
         assert!(!Arc::ptr_eq(&stale.inner, &replacement.inner));
         drop(stale);
         assert!(

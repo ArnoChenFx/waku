@@ -1,5 +1,6 @@
 //! Provider model and agent-preset discovery.
 
+use std::hash::Hasher;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -109,31 +110,33 @@ pub fn fallback_agent_presets(provider: ProviderKind) -> Vec<ProviderAgentPreset
 pub fn discover_catalog(
     provider: ProviderKind,
     binary: &Path,
+    extra_args: &[String],
 ) -> (Vec<ProviderModel>, Vec<ProviderAgentPreset>) {
     let (discovered, discovered_presets) = match provider {
         // Amp exposes stable agent modes rather than a model inventory. Keep
         // the picker aligned with the modes advertised by the current CLI.
         ProviderKind::Amp => (Vec::new(), None),
-        ProviderKind::Codex => (discover_codex_models(binary), None),
+        ProviderKind::Codex => (discover_codex_models(binary, extra_args), None),
         // Claude Code accepts model aliases and full IDs but does not expose a
         // model inventory command. Keep this catalog aligned with the
         // version-gated list used by T3 Code.
         ProviderKind::Claude => (Vec::new(), None),
-        ProviderKind::Cursor => (discover_cursor_models(binary), None),
-        ProviderKind::DeepSeek => discover_deepseek_catalog(binary),
-        ProviderKind::OpenCode => (discover_opencode_models(binary), None),
-        ProviderKind::Grok => (discover_grok_models(binary), None),
-        ProviderKind::Kimi => (discover_kimi_models(binary), None),
-        ProviderKind::Pi => (discover_pi_models(binary, PiDialect::Pi), None),
-        ProviderKind::OhMyPi => (discover_pi_models(binary, PiDialect::OhMyPi), None),
+        ProviderKind::Cursor => (discover_cursor_models(binary, extra_args), None),
+        ProviderKind::DeepSeek => discover_deepseek_catalog(binary, extra_args),
+        ProviderKind::OpenCode => (discover_opencode_models(binary, extra_args), None),
+        ProviderKind::Grok => (discover_grok_models(binary, extra_args), None),
+        ProviderKind::Kimi => (discover_kimi_models(binary, extra_args), None),
+        ProviderKind::Pi => (discover_pi_models(binary, extra_args, PiDialect::Pi), None),
+        ProviderKind::OhMyPi => (discover_pi_models(binary, extra_args, PiDialect::OhMyPi), None),
     };
     let models = if discovered.is_empty() {
-        // A failed or empty probe keeps the last successful discovery over
-        // the hardcoded catalog, so one bad CLI run can't shrink the picker.
-        cached_models(provider).unwrap_or_else(|| fallback_models(provider))
+        // A failed or empty probe keeps this configuration's last successful
+        // discovery over the hardcoded catalog, so one bad CLI run can't
+        // shrink the picker.
+        cached_models(provider, extra_args).unwrap_or_else(|| fallback_models(provider))
     } else {
         let models = deduplicate(discovered);
-        write_cached_models(provider, &models);
+        write_cached_models(provider, extra_args, &models);
         models
     };
     let presets = discovered_presets.unwrap_or_else(|| fallback_agent_presets(provider));
@@ -143,7 +146,7 @@ pub fn discover_catalog(
 /// Where a provider's last discovered catalog is cached. Debug builds keep it
 /// in the checkout's gitignored `temp/` beside the debug database, so
 /// development never touches the installed app's cache.
-fn model_cache_path(provider: ProviderKind) -> PathBuf {
+fn model_cache_path(provider: ProviderKind, extra_args: &[String]) -> PathBuf {
     let directory = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -155,14 +158,31 @@ fn model_cache_path(provider: ProviderKind) -> PathBuf {
             .join(crate::identity::DATA_DIRECTORY_NAME)
             .join("models")
     };
-    directory.join(format!("{}.json", provider.id()))
+    // The catalog belongs to a launch configuration, like the pool keys of the
+    // resident servers. Keying it on the custom arguments keeps a probe that
+    // fails under one configuration from masquerading as another
+    // configuration's successful catalog.
+    let suffix = if extra_args.is_empty() {
+        String::new()
+    } else {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for arg in extra_args {
+            hasher.write(arg.as_bytes());
+            hasher.write(b"\n");
+        }
+        format!("-{:016x}", hasher.finish())
+    };
+    directory.join(format!("{}{}.json", provider.id(), suffix))
 }
 
 /// The catalog cached by the last successful discovery, or `None` when no run
 /// has cached one or the file no longer parses. Reads the filesystem, so call
 /// it from the discovery thread, never from render.
-pub fn cached_models(provider: ProviderKind) -> Option<Vec<ProviderModel>> {
-    read_models_file(&model_cache_path(provider))
+pub fn cached_models(
+    provider: ProviderKind,
+    extra_args: &[String],
+) -> Option<Vec<ProviderModel>> {
+    read_models_file(&model_cache_path(provider, extra_args))
 }
 
 fn read_models_file(path: &Path) -> Option<Vec<ProviderModel>> {
@@ -173,8 +193,8 @@ fn read_models_file(path: &Path) -> Option<Vec<ProviderModel>> {
 
 /// Best-effort: a cache that fails to write only costs the next launch its
 /// head start.
-fn write_cached_models(provider: ProviderKind, models: &[ProviderModel]) {
-    let _ = write_models_file(&model_cache_path(provider), models);
+fn write_cached_models(provider: ProviderKind, extra_args: &[String], models: &[ProviderModel]) {
+    let _ = write_models_file(&model_cache_path(provider, extra_args), models);
 }
 
 fn write_models_file(path: &Path, models: &[ProviderModel]) -> std::io::Result<()> {
@@ -188,8 +208,9 @@ fn write_models_file(path: &Path, models: &[ProviderModel]) -> std::io::Result<(
     std::fs::rename(temporary, path)
 }
 
-fn discover_cursor_models(binary: &Path) -> Vec<ProviderModel> {
+fn discover_cursor_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command.arg("models");
     let Ok(output) = crate::command_env::output(command) else {
         return Vec::new();
@@ -253,8 +274,9 @@ fn parse_cursor_models(output: &str) -> Vec<ProviderModel> {
         .collect()
 }
 
-fn discover_opencode_models(binary: &Path) -> Vec<ProviderModel> {
+fn discover_opencode_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command.arg("models");
     let Ok(output) = crate::command_env::output(command) else {
         return Vec::new();
@@ -264,8 +286,9 @@ fn discover_opencode_models(binary: &Path) -> Vec<ProviderModel> {
 
 fn discover_deepseek_catalog(
     binary: &Path,
+    extra_args: &[String],
 ) -> (Vec<ProviderModel>, Option<Vec<ProviderAgentPreset>>) {
-    let Ok(server) = crate::deepseek_pool::acquire(binary) else {
+    let Ok(server) = crate::deepseek_pool::acquire(binary, extra_args) else {
         return (Vec::new(), None);
     };
     let models = server
@@ -404,8 +427,9 @@ fn parse_opencode_models(output: &str) -> Vec<ProviderModel> {
         .collect()
 }
 
-fn discover_grok_models(binary: &Path) -> Vec<ProviderModel> {
+fn discover_grok_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command.arg("models");
     let Ok(output) = crate::command_env::output(command) else {
         return Vec::new();
@@ -461,8 +485,9 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
 /// managed Kimi plan as well as any registry the user imported. `--json` is the
 /// catalog itself; it omits the configured default, so the human-readable
 /// listing supplies that single field.
-fn discover_kimi_models(binary: &Path) -> Vec<ProviderModel> {
+fn discover_kimi_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command.args(["provider", "list", "--json"]);
     let Ok(output) = crate::command_env::output(command) else {
         return Vec::new();
@@ -470,11 +495,12 @@ fn discover_kimi_models(binary: &Path) -> Vec<ProviderModel> {
     let Ok(catalog) = serde_json::from_slice::<Value>(&output.stdout) else {
         return Vec::new();
     };
-    parse_kimi_models(&catalog, discover_kimi_default_model(binary).as_deref())
+    parse_kimi_models(&catalog, discover_kimi_default_model(binary, extra_args).as_deref())
 }
 
-fn discover_kimi_default_model(binary: &Path) -> Option<String> {
+fn discover_kimi_default_model(binary: &Path, extra_args: &[String]) -> Option<String> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command.args(["provider", "list"]);
     let output = crate::command_env::output(command).ok()?;
     parse_kimi_default_model(&String::from_utf8_lossy(&output.stdout))
@@ -588,8 +614,13 @@ impl PiDialect {
     }
 }
 
-fn discover_pi_models(binary: &Path, dialect: PiDialect) -> Vec<ProviderModel> {
+fn discover_pi_models(
+    binary: &Path,
+    extra_args: &[String],
+    dialect: PiDialect,
+) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     if dialect == PiDialect::Pi {
         // Oh My Pi has no such opt-out; it gates its update check on a setting.
         command.env("PI_SKIP_VERSION_CHECK", "1");
@@ -748,8 +779,9 @@ fn pi_reasoning_options(dialect: PiDialect, model: &Value) -> Vec<ProviderModelO
         .collect()
 }
 
-fn discover_codex_models(binary: &Path) -> Vec<ProviderModel> {
+fn discover_codex_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command
         .args(["app-server", "--stdio"])
         .stdin(Stdio::piped())
@@ -1118,6 +1150,33 @@ mod tests {
     }
 
     #[test]
+    fn model_cache_paths_are_keyed_on_custom_arguments() {
+        let without = model_cache_path(ProviderKind::Codex, &[]);
+        let work = model_cache_path(ProviderKind::Codex, &["--profile".into(), "work".into()]);
+        let staging = model_cache_path(
+            ProviderKind::Codex,
+            &["--profile".into(), "staging".into()],
+        );
+        let work_again = model_cache_path(
+            ProviderKind::Codex,
+            &["--profile".into(), "work".into()],
+        );
+
+        // The bare file name is kept for the common no-argument configuration
+        // so existing caches stay valid; every other argument set gets its
+        // own deterministic file.
+        assert_eq!(without.file_name().unwrap(), "codex.json");
+        assert_ne!(work, without);
+        assert_ne!(staging, work);
+        assert_eq!(work, work_again);
+        assert!(work
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("codex-"));
+    }
+
+    #[test]
     fn amp_catalog_uses_agent_modes_and_medium_by_default() {
         let models = fallback_models(ProviderKind::Amp);
 
@@ -1259,7 +1318,7 @@ mod tests {
     fn installed_deepseek_harness_reports_models() {
         let binary =
             crate::command_env::find_executable("dsh").expect("DeepSeek Harness is not installed");
-        let models = discover_catalog(ProviderKind::DeepSeek, &binary).0;
+        let models = discover_catalog(ProviderKind::DeepSeek, &binary, &[]).0;
         assert!(
             !models.is_empty(),
             "the installed DeepSeek Harness reported no models"
@@ -1321,7 +1380,7 @@ mod tests {
     fn installed_kimi_reports_models_and_a_default() {
         let binary =
             crate::command_env::find_executable("kimi").expect("Kimi Code CLI is not installed");
-        let models = discover_kimi_models(&binary);
+        let models = discover_kimi_models(&binary, &[]);
         assert!(
             !models.is_empty(),
             "the installed Kimi Code CLI reported no models"
@@ -1537,7 +1596,7 @@ done
     #[ignore = "requires an installed, authenticated omp"]
     fn ohmypi_catalog_against_the_real_cli() {
         let binary = crate::command_env::find_executable("omp").expect("omp is not installed");
-        let models = discover_pi_models(&binary, PiDialect::OhMyPi);
+        let models = discover_pi_models(&binary, &[], PiDialect::OhMyPi);
         assert!(!models.is_empty(), "Oh My Pi reported no models");
         for model in &models {
             assert!(

@@ -143,6 +143,7 @@ input.search_branches: 搜索分支
 input.new_branch_name: 新分支名称
 input.detected_automatically: 自动检测
 input.filter_projects: 筛选项目
+input.provider_args_placeholder: "例如：--profile work"
 input.search_or_enter_address: 搜索或输入网址
 input.find: 查找
 input.replace: 替换
@@ -179,6 +180,8 @@ providers.detected_as: 已检测到 %{command}
 providers.searches_path: Waku 未在 PATH 中找到 %{command}
 providers.binary_path: 可执行文件路径
 providers.binary_path_description: Waku 用于启动 %{provider} 的可执行文件。按 Return 应用；留空则从 PATH 自动检测
+providers.extra_args: 自定义启动参数
+providers.extra_args_description: Waku 在 %{provider} 可执行文件之后、自身参数之前附加的全局启动参数，例如 `--profile work`。按 Return 应用；留空则不附加参数
 providers.checked_just_now: 刚刚检查过
 providers.checked_minutes_ago: "%{count} 分钟前检查过"
 providers.checked_hours_ago: "%{count} 小时前检查过"

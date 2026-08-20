@@ -30,10 +30,11 @@ pub fn fork_session_at_turn(
     cwd: &Path,
     session_id: &str,
     retained_turns: usize,
+    extra_args: &[String],
 ) -> anyhow::Result<ProviderResumeCursor> {
     // Shares the workspace's resident server when one is live; a transient
     // one is started and killed with the handle otherwise.
-    let server = crate::opencode_pool::acquire(binary, cwd)?;
+    let server = crate::opencode_pool::acquire(binary, cwd, extra_args)?;
     fork_session_at_turn_on_server(&server, session_id, retained_turns)
 }
 
@@ -126,16 +127,20 @@ pub(crate) struct OpenCodeServer {
 }
 
 impl OpenCodeServer {
+    #[cfg(test)]
     pub(crate) fn start(binary: &Path, cwd: &Path) -> anyhow::Result<Self> {
-        Self::start_with_env(binary, cwd, &[])
+        Self::start_with_env(binary, cwd, &[], &[])
     }
 
     /// Starts the server with extra environment, so a caller can hand it the
     /// Computer Use configuration the same way a one-shot invocation got it.
+    /// `extra_args` 是 Providers 设置页里配置的自定义启动参数，插到
+    /// `serve` 子命令之前。
     pub(crate) fn start_with_env(
         binary: &Path,
         cwd: &Path,
         environment: &[(String, String)],
+        extra_args: &[String],
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .context("could not reserve a local port for OpenCode")?;
@@ -147,6 +152,7 @@ impl OpenCodeServer {
             command.env(name, value);
         }
         let command = command
+            .args(extra_args)
             .args([
                 "serve",
                 "--hostname",

@@ -45,6 +45,7 @@ structured protocol and session continuity.
 
 - Keep projects and independent agent sessions in one native app.
 - Switch models, reasoning effort, and access modes from a shared interface.
+- Pass custom launch arguments per provider (for example selecting a Codex model provider with `-c` overrides).
 - Queue or steer follow-up messages while an agent is working.
 - Rewind Git-backed tasks with conversation-aware checkpoints.
 - Store app state locally, with no Waku account or remote service required.

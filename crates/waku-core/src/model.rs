@@ -27,8 +27,9 @@ pub fn provider_probe(provider: ProviderKind, binary_override: Option<&str>) -> 
 pub fn cached_provider_probe(
     provider: ProviderKind,
     binary_override: Option<&str>,
+    extra_args: &[String],
 ) -> ProviderProbe {
-    let cached = crate::model_catalog::cached_models(provider);
+    let cached = crate::model_catalog::cached_models(provider, extra_args);
     apply_cached_models(provider_probe(provider, binary_override), cached)
 }
 
@@ -44,11 +45,15 @@ fn apply_cached_models(
     probe
 }
 
-pub fn discover_provider_models(mut probe: ProviderProbe) -> ProviderProbe {
+pub fn discover_provider_models(
+    mut probe: ProviderProbe,
+    extra_args: &[String],
+) -> ProviderProbe {
     if probe.provider.supports_model_discovery()
         && let Some(path) = probe.path.as_deref()
     {
-        let (models, agent_presets) = crate::model_catalog::discover_catalog(probe.provider, path);
+        let (models, agent_presets) =
+            crate::model_catalog::discover_catalog(probe.provider, path, extra_args);
         probe.models = models;
         probe.agent_presets = agent_presets;
     }
@@ -58,8 +63,12 @@ pub fn discover_provider_models(mut probe: ProviderProbe) -> ProviderProbe {
 /// Run `<cli> --version` on the daemon host and extract its first version-like
 /// token. Provider CLIs decorate this output differently, so clients receive a
 /// normalized value rather than subprocess output.
-pub fn probe_provider_version(binary: &Path) -> Option<String> {
+///
+/// `extra_args` carries the Providers settings' custom launch arguments so the
+/// probe runs against the same profile the sessions will use.
+pub fn probe_provider_version(binary: &Path, extra_args: &[String]) -> Option<String> {
     let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
     let command = command.arg("--version").stdin(std::process::Stdio::null());
     let output = crate::command_env::output(command).ok()?;
     let combined = format!(

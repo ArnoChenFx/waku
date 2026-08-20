@@ -96,6 +96,7 @@ impl AmpDriver {
             agent_preset: _,
             computer_use_enabled: _,
             provider_cursor,
+            extra_args,
         } = options;
         if mode != RuntimeMode::FullAccess || interaction_mode != InteractionMode::Build {
             return Err(anyhow!(
@@ -119,7 +120,7 @@ impl AmpDriver {
         let title_binary = binary.clone();
         let title_cwd = cwd.clone();
         let reader_initial_thread_id = thread_id.clone();
-        let mut command: Command = crate::command_env::command(&binary);
+        let mut command: Command = super::provider_command(&binary, &extra_args);
         command.current_dir(&cwd).args(amp_args(
             model.as_deref(),
             reasoning_effort.as_deref(),
@@ -576,6 +577,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )
@@ -635,6 +637,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )

@@ -141,23 +141,29 @@ pub(crate) struct DeepSeekServer {
 }
 
 impl DeepSeekServer {
-    pub(crate) fn start(binary: &Path) -> anyhow::Result<Self> {
-        Self::start_with_dsh_home(binary, None)
+    pub(crate) fn start(binary: &Path, extra_args: &[String]) -> anyhow::Result<Self> {
+        Self::start_with_dsh_home(binary, extra_args, None)
     }
 
-    fn start_with_dsh_home(binary: &Path, dsh_home: Option<&Path>) -> anyhow::Result<Self> {
+    fn start_with_dsh_home(
+        binary: &Path,
+        extra_args: &[String],
+        dsh_home: Option<&Path>,
+    ) -> anyhow::Result<Self> {
         #[cfg(unix)]
         let mut command = {
             let mut command = crate::command_env::command("/bin/sh");
             command
                 .args(["-c", DSH_GUARDIAN_SCRIPT, "waku-dsh-guardian"])
                 .arg(binary)
+                .args(extra_args)
                 .args(["web", "--host", "127.0.0.1", "--port", "0"]);
             command
         };
         #[cfg(not(unix))]
         let mut command = {
             let mut command = crate::command_env::command(binary);
+            command.args(extra_args);
             command.args(["web", "--host", "127.0.0.1", "--port", "0"]);
             command
         };
@@ -711,7 +717,7 @@ mod tests {
     fn installed_harness_host_answers_rpc() {
         let binary =
             crate::command_env::find_executable("dsh").expect("DeepSeek Harness is not installed");
-        let server = DeepSeekServer::start(&binary).expect("Harness Host should start");
+        let server = DeepSeekServer::start(&binary, &[]).expect("Harness Host should start");
         let listed = server
             .rpc("session.list", json!({}))
             .expect("Harness Host should answer a typed RPC");
@@ -753,7 +759,7 @@ mod tests {
             TempHarnessHome(std::env::temp_dir().join(format!("waku-dsh-test-{}", Uuid::new_v4())));
         std::fs::create_dir_all(&root.0).unwrap();
         {
-            let server = DeepSeekServer::start_with_dsh_home(&binary, Some(&root.0))
+            let server = DeepSeekServer::start_with_dsh_home(&binary, &[], Some(&root.0))
                 .expect("Harness Host should start");
             let session_id = format!("waku-test-{}", Uuid::new_v4());
             let events = server.subscribe(&session_id);

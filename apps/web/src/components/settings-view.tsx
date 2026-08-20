@@ -17,6 +17,7 @@ import {
   useProviderProbes,
 } from '@/hooks/use-daemon-data'
 import { useCopyFeedback } from '@/hooks/use-copy-feedback'
+import { parseArgList } from '@/lib/arg-list'
 import {
   daemonKeys,
   updateDaemonSettings,
@@ -247,6 +248,7 @@ function ProvidersSettings() {
   const probes = useProviderProbes()
   const [expanded, setExpanded] = useState<ProviderKind | null>(null)
   const [paths, setPaths] = useState<Partial<Record<ProviderKind, string>>>({})
+  const [args, setArgs] = useState<Partial<Record<ProviderKind, string>>>({})
   const checkedAt = Math.max(
     0,
     ...Object.values(probes.states).map((state) => state.dataUpdatedAt),
@@ -273,6 +275,16 @@ function ProvidersSettings() {
     void apply({ ...settings.data, provider_binary_overrides: overrides })
   }
 
+  function applyProviderArgs(provider: ProviderKind, value: string) {
+    if (!settings.data) return
+    const parsed = parseArgList(value)
+    const extraArgs = { ...(settings.data.provider_extra_args ?? {}) }
+    if (parsed.length) extraArgs[provider] = parsed
+    else delete extraArgs[provider]
+    setArgs((current) => ({ ...current, [provider]: value }))
+    void apply({ ...settings.data, provider_extra_args: extraArgs })
+  }
+
   function toggleExpandedProvider(provider: ProviderKind) {
     if (expanded) {
       const pending = paths[expanded]
@@ -280,11 +292,20 @@ function ProvidersSettings() {
       if (pending !== undefined && pending.trim() !== applied) {
         applyProviderPath(expanded, pending)
       }
+      const pendingArgs = args[expanded]
+      const appliedArgs = settings.data?.provider_extra_args?.[expanded] ?? []
+      if (pendingArgs !== undefined && JSON.stringify(parseArgList(pendingArgs)) !== JSON.stringify(appliedArgs)) {
+        applyProviderArgs(expanded, pendingArgs)
+      }
     }
     if (expanded !== provider) {
       setPaths((current) => ({
         ...current,
         [provider]: settings.data?.provider_binary_overrides?.[provider] ?? '',
+      }))
+      setArgs((current) => ({
+        ...current,
+        [provider]: settings.data?.provider_extra_args?.[provider]?.join(' ') ?? '',
       }))
     }
     setExpanded(expanded === provider ? null : provider)
@@ -402,6 +423,33 @@ function ProvidersSettings() {
                   <p className="truncate text-[10px] text-[var(--text-ghost)]" title={providerProbeCaption(provider.command, probe, Boolean(settings.data.provider_binary_overrides?.[provider.id]), t)}>
                     {providerProbeCaption(provider.command, probe, Boolean(settings.data.provider_binary_overrides?.[provider.id]), t)}
                   </p>
+                  <div className="mt-[7px] flex flex-col gap-[5px] border-t border-input/60 pt-[7px]">
+                    <label className="text-[11.5px] font-medium">{t('providers.extra_args')}</label>
+                    <p className="text-[10.5px] leading-[15px] text-[var(--text-tertiary)]">
+                      {t('providers.extra_args_description', { provider: provider.shortName })}
+                    </p>
+                    <div className="mt-[3px] flex items-center gap-2">
+                      <Input
+                        className="h-[29px] max-w-[430px] flex-1 bg-[var(--inset)] font-mono text-[11px]"
+                        placeholder={t('input.provider_args_placeholder')}
+                        value={args[provider.id] ?? settings.data.provider_extra_args?.[provider.id]?.join(' ') ?? ''}
+                        onChange={(event) => setArgs((current) => ({ ...current, [provider.id]: event.target.value }))}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return
+                          applyProviderArgs(provider.id, event.currentTarget.value)
+                        }}
+                      />
+                      {settings.data.provider_extra_args?.[provider.id]?.length ? (
+                        <button
+                          className="h-[29px] shrink-0 rounded-[7px] border border-input px-2.5 text-[10.5px] text-[var(--text-secondary)] outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
+                          type="button"
+                          onClick={() => applyProviderArgs(provider.id, '')}
+                        >
+                          {t('common.reset')}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -12,7 +12,8 @@ mod pi;
 mod support;
 mod title_refresh;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
@@ -181,6 +182,9 @@ pub struct DriverStartOptions {
     pub agent_preset: Option<String>,
     pub computer_use_enabled: bool,
     pub provider_cursor: Option<ProviderResumeCursor>,
+    /// Custom launch arguments from the Providers settings, appended right
+    /// after the binary and before Waku's own arguments.
+    pub extra_args: Vec<String>,
 }
 
 /// The subset of `DriverStartOptions` a user can change without starting a new
@@ -194,6 +198,18 @@ pub struct SessionOptions {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub context_window: Option<String>,
+}
+
+/// A provider CLI launch command carrying the user's custom launch arguments.
+///
+/// The custom arguments sit immediately after the binary path and before any
+/// argument Waku adds itself, so a global flag or profile selector the user
+/// wrote in the Providers settings reaches the CLI first — for example
+/// `codex --profile work app-server --stdio`.
+pub(crate) fn provider_command(binary: &Path, extra_args: &[String]) -> Command {
+    let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
+    command
 }
 
 pub(crate) fn start_local(

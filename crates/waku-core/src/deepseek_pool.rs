@@ -74,24 +74,38 @@ impl Default for PoolSlot {
     }
 }
 
-fn pool() -> &'static Mutex<HashMap<PathBuf, Arc<PoolSlot>>> {
-    static POOL: OnceLock<Mutex<HashMap<PathBuf, Arc<PoolSlot>>>> = OnceLock::new();
+/// 池键：可执行文件 + 自定义启动参数。参数不同的 Host 互不复用。
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct DeepSeekPoolKey {
+    pub(crate) binary: PathBuf,
+    pub(crate) extra_args: Vec<String>,
+}
+
+fn pool() -> &'static Mutex<HashMap<DeepSeekPoolKey, Arc<PoolSlot>>> {
+    static POOL: OnceLock<Mutex<HashMap<DeepSeekPoolKey, Arc<PoolSlot>>>> = OnceLock::new();
     POOL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Returns the resident Harness Host for `binary`, starting it when needed.
 /// Blocking by design; driver construction already runs off the UI thread.
-pub(crate) fn acquire(binary: &Path) -> anyhow::Result<PooledDeepSeekServer> {
-    acquire_with_start(binary, || DeepSeekServer::start(binary))
+pub(crate) fn acquire(
+    binary: &Path,
+    extra_args: &[String],
+) -> anyhow::Result<PooledDeepSeekServer> {
+    let key = DeepSeekPoolKey {
+        binary: binary.to_path_buf(),
+        extra_args: extra_args.to_vec(),
+    };
+    acquire_with_start(key, || DeepSeekServer::start(binary, extra_args))
 }
 
 fn acquire_with_start(
-    binary: &Path,
+    key: DeepSeekPoolKey,
     start: impl FnOnce() -> anyhow::Result<DeepSeekServer>,
 ) -> anyhow::Result<PooledDeepSeekServer> {
     let slot = {
         let mut pool = pool().lock().unwrap();
-        Arc::clone(pool.entry(binary.to_path_buf()).or_default())
+        Arc::clone(pool.entry(key).or_default())
     };
 
     let superseded = loop {
@@ -152,8 +166,8 @@ mod tests {
     fn sessions_using_one_binary_share_the_resident_host() {
         let binary =
             crate::command_env::find_executable("dsh").expect("DeepSeek Harness is not installed");
-        let first = acquire(&binary).expect("the first Harness lease should start");
-        let second = acquire(&binary).expect("the second Harness lease should attach");
+        let first = acquire(&binary, &[]).expect("the first Harness lease should start");
+        let second = acquire(&binary, &[]).expect("the second Harness lease should attach");
 
         assert_eq!(first.port, second.port);
         drop(first);

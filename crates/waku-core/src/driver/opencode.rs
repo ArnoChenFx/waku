@@ -91,6 +91,7 @@ impl OpenCodeDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            extra_args,
         } = options;
         let resume_session_id = match provider_cursor {
             Some(ProviderResumeCursor::OpenCode { session_id }) => {
@@ -125,9 +126,9 @@ impl OpenCodeDriver {
         // sessions per process, and a second `opencode serve` in the same
         // workspace contends with the live one.
         let server = if computer_use.is_some() {
-            PooledServer::dedicated(OpenCodeServer::start_with_env(&binary, &cwd, &environment)?)
+            PooledServer::dedicated(OpenCodeServer::start_with_env(&binary, &cwd, &environment, &extra_args)?)
         } else {
-            crate::opencode_pool::acquire(&binary, &cwd)?
+            crate::opencode_pool::acquire(&binary, &cwd, &extra_args)?
         };
 
         // Reuse the native session when resuming so the conversation, and the
@@ -1261,6 +1262,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )
@@ -1350,6 +1352,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )

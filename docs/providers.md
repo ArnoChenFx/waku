@@ -39,7 +39,7 @@ Inputs ([driver/mod.rs:67](../crates/waku-core/src/driver/mod.rs#L79)):
 pub struct DriverStartOptions {
     binary, cwd, mode, interaction_mode,
     model, reasoning_effort, service_tier,
-    computer_use_enabled, provider_cursor,
+    computer_use_enabled, provider_cursor, extra_args,
 }
 ```
 
@@ -146,6 +146,53 @@ cleanup from the OS for free.
 The other explicit kills are narrow and deliberate: Amp's process when the user
 stops a turn, the short-lived servers that back a fork — OpenCode's and Grok's — and the
 OpenCode server itself, whose driver kills it explicitly on drop.
+
+## Custom launch arguments
+
+The Providers settings page (desktop and Web) accepts free-form CLI arguments
+next to the binary override, for things like `codex -c model_provider=ollama`. They are
+stored per provider in `DaemonSettings.provider_extra_args`
+([settings.rs](../crates/waku-protocol/src/settings.rs)) and injected on the
+daemon side: clients only write the setting, and the daemon reads it back for
+every launch, so desktop and Web sessions stay in lockstep.
+
+The text is a shell-style word list — `parse_arg_list` splits on whitespace
+but keeps double-quoted segments together, so `--config "my dir"` survives.
+Arguments land directly after the binary and before Waku's own:
+
+- Stdio drivers build their command through `provider_command`
+  ([driver/mod.rs](../crates/waku-core/src/driver/mod.rs)):
+  `codex -c model_provider=ollama app-server --stdio`.
+- ACP drivers splice them ahead of the subcommand:
+  `cursor-agent --flag acp` ([driver/acp.rs](../crates/waku-core/src/driver/acp.rs)).
+- Resident servers (OpenCode `serve`, DeepSeek Harness `web`) take them the
+  same way, and the server pools key their cache on the argument list — a
+  different argument set gets its own process, so profiles cannot share a
+  server.
+
+Probing follows the same rule: `--version` and model discovery run with the
+configured arguments, so a configuration that changes the model inventory is
+reflected in what Waku offers. One caveat: an argument set that makes the
+probe fail (for example, a flag the subcommand rejects) leaves the last
+successful catalog in place, so the picker does not visibly change — the
+session start fails with the CLI's error instead.
+
+### Codex: express profiles as `-c` overrides
+
+`codex app-server` does not accept `--profile` — codex 0.148 rejects it for
+anything but runtime commands such as `codex exec` and `codex mcp`. Waku
+talks to Codex through the app-server, so a profile file such as
+`~/.codex/llama.config.toml` must be expressed with the `-c key=value`
+overrides the app-server does accept:
+
+```
+-c model_provider=llama_cpp -c model=Qwen3.8-27B -c model_catalog_json=/path/to/model_catalog.json
+```
+
+Dotted paths override nested config, and `model_catalog_json` points the
+app-server at the same JSON model catalog the profile would load, which is
+what feeds Waku's model picker.
+
 
 ## At a glance
 

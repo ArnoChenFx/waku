@@ -205,6 +205,7 @@ impl PiDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            extra_args,
         } = options;
         if mode != RuntimeMode::FullAccess || interaction_mode != InteractionMode::Build {
             return Err(anyhow!(
@@ -242,7 +243,7 @@ impl PiDriver {
             .as_ref()
             .map(|_| crate::computer_use::pi_extension_path())
             .transpose()?;
-        let mut command = crate::command_env::command(&binary);
+        let mut command = super::provider_command(&binary, &extra_args);
         command.args(["--mode", "rpc", flavor.full_access_arg()]);
         if flavor.skips_version_check_by_env() {
             command.env("PI_SKIP_VERSION_CHECK", "1");
@@ -1505,6 +1506,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )
@@ -1755,6 +1757,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )

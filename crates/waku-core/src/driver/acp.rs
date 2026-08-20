@@ -109,6 +109,7 @@ impl AcpDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            extra_args,
         } = options;
         let fork_context = match &provider_cursor {
             Some(ProviderResumeCursor::Cursor { fork_context, .. }) => fork_context.clone(),
@@ -129,7 +130,9 @@ impl AcpDriver {
             None => None,
         };
 
-        let launch = launch_for(provider)?;
+        let mut launch = launch_for(provider)?;
+        // 用户自定义参数要落在 CLI 全局参数位置（`acp` 等子命令参数之前）。
+        launch.args.splice(0..0, extra_args);
         let computer_use = (provider == ProviderKind::Grok && computer_use_enabled)
             .then(|| super::support::HeadlessComputerUseRuntime::start(provider, events.clone()))
             .transpose()?;
@@ -1814,6 +1817,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )
@@ -1869,6 +1873,7 @@ mod tests {
                 agent_preset: None,
                 computer_use_enabled: false,
                 provider_cursor: None,
+                extra_args: Vec::new(),
             },
             events,
         )

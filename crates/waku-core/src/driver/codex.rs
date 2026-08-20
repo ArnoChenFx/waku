@@ -191,6 +191,7 @@ impl CodexDriver {
             agent_preset: _,
             computer_use_enabled,
             provider_cursor,
+            extra_args,
         } = options;
         let provider_session_id = match provider_cursor {
             Some(ProviderResumeCursor::Codex { thread_id }) => Some(thread_id),
@@ -216,7 +217,7 @@ impl CodexDriver {
             .map(|config| config.server_path.clone());
         let title_binary = binary.clone();
         let title_cwd = cwd.clone();
-        let mut command = crate::command_env::command(&binary);
+        let mut command = super::provider_command(&binary, &extra_args);
         command.args(["app-server", "--stdio"]);
         configure_computer_use_command(&mut command, computer_use.as_ref());
         let command = command

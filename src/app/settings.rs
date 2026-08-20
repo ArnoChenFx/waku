@@ -1698,6 +1698,38 @@ impl Waku {
                 this.apply_provider_path_override(cx);
             }));
 
+        let args_value = self
+            .state
+            .provider_extra_args
+            .get(&kind)
+            .cloned()
+            .filter(|args| !args.is_empty());
+        let args_reset = div()
+            .id(SharedString::from(format!(
+                "provider-args-reset-{}",
+                kind.id()
+            )))
+            .tab_index(0)
+            .focus_visible(|style| style.border_color(theme.accent))
+            .h(px(29.0))
+            .px(px(10.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .flex()
+            .flex_none()
+            .items_center()
+            .cursor_default()
+            .text_size(px(10.5))
+            .text_color(theme.text_secondary)
+            .hover(|element| element.bg(theme.overlay))
+            .child(tr!("common.reset"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.provider_args_input
+                    .update(cx, |input, cx| input.clear(cx));
+                this.apply_provider_args(cx);
+            }));
+
         div()
             .mt(px(10.0))
             .pl(px(42.0))
@@ -1743,6 +1775,43 @@ impl Waku {
                     .text_color(theme.text_ghost)
                     .child(SharedString::from(caption)),
             )
+            .child(
+                div()
+                    .mt(px(12.0))
+                    .text_size(px(11.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(tr!("providers.extra_args")),
+            )
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .line_height(px(15.0))
+                    .text_color(theme.text_tertiary)
+                    .child(SharedString::from(tr!(
+                        "providers.extra_args_description",
+                        provider = kind.short_name()
+                    ))),
+            )
+            .child(
+                div()
+                    .mt(px(3.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        TextField::new(
+                            SharedString::from(format!(
+                                "provider-args-field-{}",
+                                kind.id()
+                            )),
+                            self.provider_args_input.clone(),
+                        )
+                        .flex_1()
+                        .max_w(px(430.0)),
+                    )
+                    .when(args_value.is_some(), |element| element.child(args_reset)),
+            )
     }
 
     fn toggle_provider_expanded(
@@ -1754,6 +1823,7 @@ impl Waku {
         // Commit any pending edit for the previously expanded provider before
         // the input is handed to another row.
         self.apply_provider_path_override(cx);
+        self.apply_provider_args(cx);
         if self.expanded_provider_settings == Some(provider) {
             self.expanded_provider_settings = None;
         } else {
@@ -1766,6 +1836,14 @@ impl Waku {
                 .unwrap_or_default();
             self.provider_path_input
                 .update(cx, |input, cx| input.set_content(override_value, cx));
+            let args_value = self
+                .state
+                .provider_extra_args
+                .get(&provider)
+                .map(|args| args.join(" "))
+                .unwrap_or_default();
+            self.provider_args_input
+                .update(cx, |input, cx| input.set_content(args_value, cx));
             let focus = self.provider_path_input.read(cx).focus();
             window.focus(&focus, cx);
         }
@@ -1798,6 +1876,40 @@ impl Waku {
             self.state.provider_binary_overrides.remove(&provider);
         } else {
             self.state.provider_binary_overrides.insert(provider, text);
+        }
+        self.save();
+        self.refresh_provider_detection(Some(provider));
+        cx.notify();
+    }
+
+    /// Commit the custom launch arguments for the expanded provider. Empty
+    /// clears the override; otherwise the line splits into argv tokens the
+    /// daemon inserts right after the binary. Re-detects the provider so its
+    /// version and model catalog reflect the profile just selected.
+    pub(super) fn apply_provider_args(&mut self, cx: &mut Context<Self>) {
+        let Some(provider) = self.expanded_provider_settings else {
+            return;
+        };
+        let text = self
+            .provider_args_input
+            .read(cx)
+            .content()
+            .trim()
+            .to_owned();
+        let parsed = waku_protocol::settings::parse_arg_list(&text);
+        let current = self
+            .state
+            .provider_extra_args
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default();
+        if parsed == current {
+            return;
+        }
+        if parsed.is_empty() {
+            self.state.provider_extra_args.remove(&provider);
+        } else {
+            self.state.provider_extra_args.insert(provider, parsed);
         }
         self.save();
         self.refresh_provider_detection(Some(provider));
@@ -2246,6 +2358,9 @@ impl Waku {
         });
         self.provider_path_input.update(cx, |input, cx| {
             input.set_placeholder(tr!("input.detected_automatically"), cx)
+        });
+        self.provider_args_input.update(cx, |input, cx| {
+            input.set_placeholder(tr!("input.provider_args_placeholder"), cx)
         });
         self.usage_project_filter.update(cx, |input, cx| {
             input.set_placeholder(tr!("input.filter_projects"), cx)

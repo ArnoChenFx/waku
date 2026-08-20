@@ -287,6 +287,10 @@ pub struct PersistedState {
     /// detect from PATH.
     #[serde(default)]
     pub provider_binary_overrides: HashMap<ProviderKind, String>,
+    /// Per-provider custom launch arguments from the Providers settings;
+    /// inserted right after the binary when the daemon spawns the CLI.
+    #[serde(default)]
+    pub provider_extra_args: HashMap<ProviderKind, Vec<String>>,
     /// Unknown daemon settings survive edits made by this desktop version.
     #[serde(skip)]
     daemon_settings_extra: BTreeMap<String, serde_json::Value>,
@@ -346,6 +350,7 @@ impl PersistedState {
             computer_use_allowed_apps: Vec::new(),
             disabled_providers: Vec::new(),
             provider_binary_overrides: HashMap::new(),
+            provider_extra_args: HashMap::new(),
             daemon_settings_extra: BTreeMap::new(),
             dirty_sessions: HashSet::new(),
         }
@@ -443,6 +448,7 @@ impl PersistedState {
             computer_use_allowed_apps: self.computer_use_allowed_apps.clone(),
             disabled_providers: self.disabled_providers.clone(),
             provider_binary_overrides: self.provider_binary_overrides.clone(),
+            provider_extra_args: self.provider_extra_args.clone(),
             extra: self.daemon_settings_extra.clone(),
         }
     }
@@ -478,6 +484,7 @@ impl PersistedState {
         self.computer_use_allowed_apps = settings.computer_use_allowed_apps;
         self.disabled_providers = settings.disabled_providers;
         self.provider_binary_overrides = settings.provider_binary_overrides;
+        self.provider_extra_args = settings.provider_extra_args;
         self.daemon_settings_extra = settings.extra;
     }
 
@@ -2695,6 +2702,7 @@ mod tests {
             "computer_use_allowed_apps",
             "disabled_providers",
             "provider_binary_overrides",
+            "provider_extra_args",
         ] {
             assert!(
                 value.get(daemon_key).is_none(),
@@ -2737,6 +2745,7 @@ mod tests {
             "computer_use_allowed_apps",
             "disabled_providers",
             "provider_binary_overrides",
+            "provider_extra_args",
         ] {
             assert!(
                 app_state.get(setting_key).is_none(),

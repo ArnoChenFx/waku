@@ -11,6 +11,8 @@ export type ProviderProbeResult = ProviderProbe & { version: string | null }
 
 export interface CachedProviderProbe {
   binaryOverride: string | null
+  /** Normalized custom launch arguments the probe ran against. */
+  extraArgs: string
   data: ProviderProbeResult
   updatedAt: number
 }
@@ -27,12 +29,16 @@ export function readProviderProbeCache(
   address: string,
   provider: ProviderKind,
   expectedBinaryOverride?: string | null,
+  expectedExtraArgs?: string,
   now = Date.now(),
 ): CachedProviderProbe | undefined {
   const state = readState(storage)
   const entry = state?.entries[entryKey(address, provider)]
   if (!entry || now - entry.updatedAt > CACHE_MAX_AGE) return undefined
   if (expectedBinaryOverride !== undefined && entry.binaryOverride !== expectedBinaryOverride) {
+    return undefined
+  }
+  if (expectedExtraArgs !== undefined && entry.extraArgs !== expectedExtraArgs) {
     return undefined
   }
   return entry
@@ -43,6 +49,7 @@ export function writeProviderProbeCache(
   address: string,
   provider: ProviderKind,
   binaryOverride: string | null,
+  extraArgs: string,
   data: ProviderProbeResult,
   now = Date.now(),
 ): void {
@@ -54,7 +61,7 @@ export function writeProviderProbeCache(
       .sort(([, left], [, right]) => right.updatedAt - left.updatedAt)
       .slice(0, CACHE_MAX_ENTRIES - 1),
   )
-  entries[entryKey(address, provider)] = { binaryOverride, data, updatedAt: now }
+  entries[entryKey(address, provider)] = { binaryOverride, extraArgs, data, updatedAt: now }
   try {
     storage.setItem(CACHE_KEY, JSON.stringify({ version: CACHE_VERSION, entries }))
   } catch {
@@ -91,6 +98,7 @@ function readState(storage: StorageLike | null): ProviderProbeCacheState | undef
 function isCachedProviderProbe(value: unknown): value is CachedProviderProbe {
   if (!isRecord(value) || typeof value.updatedAt !== 'number') return false
   if (value.binaryOverride !== null && typeof value.binaryOverride !== 'string') return false
+  if (typeof value.extraArgs !== 'string') return false
   const data = value.data
   return isRecord(data)
     && typeof data.provider === 'string'

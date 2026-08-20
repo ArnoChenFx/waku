@@ -16,6 +16,7 @@ import {
   loadUsageHistory,
   probeProvider,
 } from '@/lib/daemon-api'
+import { normalizeProviderArgs } from '@/lib/arg-list'
 import {
   browserProviderProbeStorage,
   PROVIDER_PROBE_CACHE_STALE_TIME,
@@ -127,12 +128,19 @@ export function useProviderProbe(provider: ProviderKind | undefined) {
   const binaryOverride = settings.data && provider
     ? settings.data.provider_binary_overrides?.[provider] ?? null
     : cached?.binaryOverride ?? null
-  const initial = cached?.binaryOverride === binaryOverride ? cached : undefined
+  const extraArgs = settings.data && provider
+    ? normalizeProviderArgs(settings.data.provider_extra_args?.[provider])
+    : cached?.extraArgs ?? normalizeProviderArgs()
+  const initial =
+    cached?.binaryOverride === binaryOverride && cached?.extraArgs === extraArgs
+      ? cached
+      : undefined
   return useQuery({
     queryKey: daemonKeys.provider(
       address,
       provider ?? 'codex',
       binaryOverride,
+      extraArgs,
     ),
     queryFn: async () => {
       const data = await probeProvider(requireClient(client), provider!, settings.data!)
@@ -141,6 +149,7 @@ export function useProviderProbe(provider: ProviderKind | undefined) {
         address,
         provider!,
         binaryOverride,
+        extraArgs,
         data,
       )
       return data
@@ -166,12 +175,18 @@ export function useProviderProbes(enabled = true) {
       const binaryOverride = settings.data
         ? settings.data.provider_binary_overrides?.[id] ?? null
         : cached?.binaryOverride ?? null
-      const initial = cached?.binaryOverride === binaryOverride ? cached : undefined
+      const extraArgs = settings.data
+        ? normalizeProviderArgs(settings.data.provider_extra_args?.[id])
+        : cached?.extraArgs ?? normalizeProviderArgs()
+      const initial =
+        cached?.binaryOverride === binaryOverride && cached?.extraArgs === extraArgs
+          ? cached
+          : undefined
       return {
-        queryKey: daemonKeys.provider(address, id, binaryOverride),
+        queryKey: daemonKeys.provider(address, id, binaryOverride, extraArgs),
         queryFn: async () => {
           const data = await probeProvider(requireClient(client), id, settings.data!)
-          writeProviderProbeCache(storage, address, id, binaryOverride, data)
+          writeProviderProbeCache(storage, address, id, binaryOverride, extraArgs, data)
           return data
         },
         enabled: active,

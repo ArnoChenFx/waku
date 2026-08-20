@@ -148,6 +148,7 @@ input.search_branches: ブランチを検索
 input.new_branch_name: 新しいブランチ名
 input.detected_automatically: 自動検出
 input.filter_projects: プロジェクトを絞り込む
+input.provider_args_placeholder: "例: --profile work"
 input.search_or_enter_address: 検索またはアドレスを入力
 input.find: 検索
 input.replace: 置換
@@ -187,6 +188,8 @@ providers.detected_as: "%{command} として検出されました"
 providers.searches_path: Waku は PATH で %{command} を検出できませんでした
 providers.binary_path: 実行ファイルのパス
 providers.binary_path_description: Waku が %{provider} の起動に使用する実行ファイルです。Return キーで適用します。空欄にすると PATH から自動検出します
+providers.extra_args: カスタム起動引数
+providers.extra_args_description: "Waku が %{provider} のバイナリ直後、Waku 自身の引数の前に付ける起動引数です。例: `--profile work`。Return キーで適用します。空欄にすると追加引数なしで起動します"
 providers.checked_just_now: たった今確認済み
 providers.checked_minutes_ago: "%{count} 分前に確認済み"
 providers.checked_hours_ago: "%{count} 時間前に確認済み"

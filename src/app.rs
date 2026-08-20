@@ -1099,6 +1099,9 @@ pub struct Waku {
     /// override input below edits this provider's entry.
     expanded_provider_settings: Option<ProviderKind>,
     provider_path_input: Entity<ComposerInput>,
+    /// Custom launch arguments the Providers page edits per provider, e.g.
+    /// `--profile work` for Codex. Committed on Return or row switch.
+    provider_args_input: Entity<ComposerInput>,
     computer_permissions: ComputerPermissions,
     computer_permission_tx: Sender<Result<ComputerPermissions, String>>,
     computer_permission_events: Receiver<Result<ComputerPermissions, String>>,
@@ -1940,6 +1943,12 @@ impl Waku {
                 .select_all_on_focus_click()
                 .placeholder(tr!("input.detected_automatically"))
         });
+        let provider_args_input = cx.new(|cx| {
+            ComposerInput::new(window, cx)
+                .search_field()
+                .select_all_on_focus_click()
+                .placeholder(tr!("input.provider_args_placeholder"))
+        });
         let usage_project_filter = cx.new(|cx| {
             ComposerInput::new(window, cx)
                 .search_field()
@@ -2505,6 +2514,15 @@ impl Waku {
                 },
             )
             .detach();
+            cx.subscribe(
+                &provider_args_input,
+                |this: &mut Self, _, event: &ComposerEvent, cx| {
+                    if matches!(event, ComposerEvent::Submit(_)) {
+                        this.apply_provider_args(cx);
+                    }
+                },
+            )
+            .detach();
 
             // Like T3 Code's adapter subscriptions feeding its ingestion
             // worker, provider threads push an edge into this bounded wake
@@ -2664,6 +2682,7 @@ impl Waku {
                 provider_detection_checked_at: None,
                 expanded_provider_settings: None,
                 provider_path_input,
+                provider_args_input,
                 computer_permissions: ComputerPermissions::default(),
                 computer_permission_tx,
                 computer_permission_events,

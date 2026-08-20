@@ -207,22 +207,26 @@ impl Backend for WakuBackend {
                 probe_version,
             } => {
                 ensure_shell_environment();
+                // 探测与真实会话走同一套自定义参数，保证版本与模型目录
+                // 反映用户当前选中的配置（例如 codex 的某个 profile）。
+                let extra_args = self.provider_extra_args(provider);
                 let mut probe = match binary_override.as_deref() {
                     override_value if discover_models || probe_version => {
                         crate::model::provider_probe(provider, override_value)
                     }
-                    override_value => crate::model::cached_provider_probe(provider, override_value),
+                    override_value => {
+                        crate::model::cached_provider_probe(provider, override_value, &extra_args)
+                    }
                 };
                 let version = probe_version
                     .then(|| {
-                        probe
-                            .path
-                            .as_deref()
-                            .and_then(crate::model::probe_provider_version)
+                        probe.path.as_deref().and_then(|binary| {
+                            crate::model::probe_provider_version(binary, &extra_args)
+                        })
                     })
                     .flatten();
                 if discover_models {
-                    probe = crate::model::discover_provider_models(probe);
+                    probe = crate::model::discover_provider_models(probe, &extra_args);
                 }
                 Ok(ResponsePayload::ProviderProbe { probe, version })
             }
@@ -581,6 +585,9 @@ impl Backend for WakuBackend {
                         .map(serde_json::from_value)
                         .transpose()
                         .context("daemon received an invalid provider cursor")?,
+                    // 自定义启动参数来自 daemon 端的 Providers 设置，不经过
+                    // 客户端——桌面与 Web 只写设置，由 daemon 统一注入。
+                    extra_args: self.provider_extra_args(provider),
                 };
                 let (wake, _wake_events) = smol::channel::bounded(1);
                 let (event_sender, event_receiver) = driver::event_channel(wake);
@@ -1026,6 +1033,7 @@ impl WakuBackend {
                     cwd: cwd.to_owned(),
                     session_id: session_id.clone(),
                     turn_count: provider_turn_count,
+                    extra_args: self.provider_extra_args(ProviderKind::OpenCode),
                 })?;
                 Ok((fork.cursor, HashMap::new()))
             }
@@ -1124,6 +1132,7 @@ impl WakuBackend {
                 agent_preset: source.agent_preset.clone(),
                 computer_use_enabled: false,
                 provider_cursor: source.provider_cursor.clone(),
+                extra_args: self.provider_extra_args(source.provider),
             },
             event_sender,
         )?;
@@ -1189,6 +1198,7 @@ impl WakuBackend {
                         cwd: cwd.to_owned(),
                         session_id: session_id.clone(),
                         turn_count: provider_turn_count,
+                        extra_args: self.provider_extra_args(ProviderKind::OpenCode),
                     })?
                     .cursor
                 };
@@ -1283,6 +1293,7 @@ impl WakuBackend {
                 agent_preset: source.agent_preset.clone(),
                 computer_use_enabled: false,
                 provider_cursor: source.provider_cursor.clone(),
+                extra_args: self.provider_extra_args(source.provider),
             },
             event_sender,
         )?;
@@ -1299,6 +1310,16 @@ impl WakuBackend {
         crate::model::provider_probe(provider, binary_override)
             .path
             .ok_or_else(|| anyhow!("{} is not installed on the daemon", provider.display_name()))
+    }
+
+    /// Providers 设置页为某个 provider 配置的自定义启动参数；未配置返回空表。
+    fn provider_extra_args(&self, provider: ProviderKind) -> Vec<String> {
+        self.settings
+            .get()
+            .provider_extra_args
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -1451,8 +1472,11 @@ fn fork_provider_session(
             cwd,
             session_id,
             turn_count,
+            extra_args,
         } => (
-            crate::opencode_session::fork_session_at_turn(&binary, &cwd, &session_id, turn_count)?,
+            crate::opencode_session::fork_session_at_turn(
+                &binary, &cwd, &session_id, turn_count, &extra_args,
+            )?,
             HashMap::new(),
             None,
         ),

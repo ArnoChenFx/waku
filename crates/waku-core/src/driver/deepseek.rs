@@ -110,6 +110,7 @@ impl DeepSeekDriver {
             agent_preset,
             computer_use_enabled: _,
             provider_cursor,
+            extra_args,
         } = options;
         let (requested_session_id, resuming) = match provider_cursor {
             Some(ProviderResumeCursor::DeepSeek { session_id }) if !session_id.is_empty() => {
@@ -124,7 +125,7 @@ impl DeepSeekDriver {
             _ => (Uuid::new_v4().to_string(), false),
         };
 
-        let server = crate::deepseek_pool::acquire(&binary)?;
+        let server = crate::deepseek_pool::acquire(&binary, &extra_args)?;
         // Subscribe first. A create immediately publishes host and mux state,
         // and buffering that state closes the create/history race.
         let event_rx = server.subscribe(&requested_session_id);

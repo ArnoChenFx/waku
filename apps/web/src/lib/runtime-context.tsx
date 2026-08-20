@@ -40,6 +40,7 @@ import {
   PROVIDER_PROBE_CACHE_STALE_TIME,
   writeProviderProbeCache,
 } from './provider-probe-cache'
+import { normalizeProviderArgs } from './arg-list'
 import {
   reduceRuntimeEvent,
   type PendingPermission,
@@ -664,8 +665,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             staleTime: 60_000,
           })
           const binaryOverride = settings.provider_binary_overrides?.[currentSession.provider] ?? null
+          const extraArgs = normalizeProviderArgs(settings.provider_extra_args?.[currentSession.provider])
           const providerProbe = await queryClient.fetchQuery({
-            queryKey: daemonKeys.provider(config.address, currentSession.provider, binaryOverride),
+            queryKey: daemonKeys.provider(config.address, currentSession.provider, binaryOverride, extraArgs),
             queryFn: async () => {
               const data = await probeProvider(client, currentSession.provider, settings)
               writeProviderProbeCache(
@@ -673,6 +675,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
                 config.address,
                 currentSession.provider,
                 binaryOverride,
+                extraArgs,
                 data,
               )
               return data

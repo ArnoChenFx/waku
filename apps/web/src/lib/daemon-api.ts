@@ -26,6 +26,7 @@ import type {
   WorkspaceOperation,
   WorkspaceResult,
 } from '@waku/client'
+import { normalizeProviderArgs } from '@/lib/arg-list'
 
 export type TaskState = Extract<ResponsePayload, { type: 'taskState' }>
 export type DaemonDirectory = Extract<WorkspaceResult, { type: 'directory' }>
@@ -37,8 +38,12 @@ export const daemonKeys = {
     ['daemon', address, 'session', sessionId] as const,
   settings: (address: string) => ['daemon', address, 'settings'] as const,
   providers: (address: string) => ['daemon', address, 'providers'] as const,
-  provider: (address: string, provider: ProviderKind, binaryOverride: string | null = null) =>
-    [...daemonKeys.providers(address), 'catalog', provider, binaryOverride] as const,
+  provider: (
+    address: string,
+    provider: ProviderKind,
+    binaryOverride: string | null = null,
+    extraArgs: string = normalizeProviderArgs(),
+  ) => [...daemonKeys.providers(address), 'catalog', provider, binaryOverride, extraArgs] as const,
   providerDetection: (address: string, provider: ProviderKind) =>
     [...daemonKeys.providers(address), 'detection', provider] as const,
   planUsage: (address: string, provider: ProviderKind) =>
@@ -130,6 +135,7 @@ export async function loadDaemonSettings(
   return {
     ...response.settings,
     provider_binary_overrides: response.settings.provider_binary_overrides ?? {},
+    provider_extra_args: response.settings.provider_extra_args ?? {},
   }
 }
 

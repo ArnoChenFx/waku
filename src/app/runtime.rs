@@ -224,6 +224,9 @@ struct MessageRewindRequest {
     provider_turn_count: usize,
     provider_resume_at: Option<String>,
     binary: Option<PathBuf>,
+    /// 与 daemon 端 Providers 设置一致的自定义启动参数；OpenCode 的冷 fork
+    /// 必须带着同一套参数，才能命中常驻服务器的池键。
+    provider_extra_args: Vec<String>,
     driver: Option<DriverHandle>,
     driver_start: Option<DriverStartRequest>,
 }
@@ -445,6 +448,7 @@ fn perform_provider_rewind(
                             cwd: request.project_path.clone(),
                             session_id: native_session_id.clone(),
                             turn_count: request.provider_turn_count,
+                            extra_args: request.provider_extra_args.clone(),
                         },
                     )?
                     .cursor
@@ -572,6 +576,9 @@ struct ResponseForkRequest {
     provider_turn_count: usize,
     turns_to_remove: usize,
     binary: Option<PathBuf>,
+    /// 与 daemon 端 Providers 设置一致的自定义启动参数，保证 OpenCode 的
+    /// 冷 fork 与常驻服务器使用同一套池键。
+    provider_extra_args: Vec<String>,
     driver: Option<DriverHandle>,
     driver_start: Option<DriverStartRequest>,
 }
@@ -767,6 +774,7 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                                 cwd: request.source_workspace_path.clone(),
                                 session_id: native_session_id.clone(),
                                 turn_count: request.provider_turn_count,
+                                extra_args: request.provider_extra_args.clone(),
                             },
                         )?
                         .cursor,
@@ -1875,6 +1883,12 @@ impl Waku {
         } else {
             None
         };
+        let provider_extra_args = self
+            .state
+            .provider_extra_args
+            .get(&source.provider)
+            .cloned()
+            .unwrap_or_default();
         let request = ResponseForkRequest {
             workspace_client: waku_client::WorkspaceClient::new(self.daemon.client()),
             source,
@@ -1884,6 +1898,7 @@ impl Waku {
             provider_turn_count,
             turns_to_remove,
             binary,
+            provider_extra_args,
             driver,
             driver_start,
         };
@@ -2288,6 +2303,12 @@ impl Waku {
             provider_turn_count,
             provider_resume_at,
             binary,
+            provider_extra_args: self
+                .state
+                .provider_extra_args
+                .get(&provider)
+                .cloned()
+                .unwrap_or_default(),
             driver,
             driver_start,
         };

@@ -32,6 +32,8 @@ pub enum ProviderSessionForkRequest {
         cwd: PathBuf,
         session_id: String,
         turn_count: usize,
+        /// 自定义启动参数，保证冷 fork 与常驻服务器使用同一套池键。
+        extra_args: Vec<String>,
     },
     Grok {
         binary: PathBuf,

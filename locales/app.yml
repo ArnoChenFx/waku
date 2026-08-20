@@ -291,6 +291,8 @@ input.detected_automatically:
   en: Detected automatically
 input.filter_projects:
   en: Filter projects
+input.provider_args_placeholder:
+  en: "Example: --profile work"
 input.search_or_enter_address:
   en: Search or enter address
 input.find:
@@ -366,6 +368,10 @@ providers.binary_path:
   en: Binary path
 providers.binary_path_description:
   en: The executable Waku launches for %{provider}. Press Return to apply; leave empty to detect from PATH
+providers.extra_args:
+  en: Custom launch arguments
+providers.extra_args_description:
+  en: Global flags Waku passes right after the %{provider} binary, before Waku's own arguments — for example `--profile work`. Press Return to apply; leave empty to launch with no extra flags
 providers.checked_just_now:
   en: Checked just now
 providers.checked_minutes_ago:
