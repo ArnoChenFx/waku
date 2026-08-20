@@ -676,6 +676,8 @@ right_panel.tabs: 右侧面板标签页
 right_panel.add_tab: 添加面板标签页
 right_panel.hide: 隐藏右侧面板
 right_panel.close_tab: 关闭%{title}
+open_in.open: 用%{app}打开项目
+open_in.choose: 选择打开项目的应用…
 environment.title: 环境
 environment.summary: 环境和后台工作
 environment.changes: 更改

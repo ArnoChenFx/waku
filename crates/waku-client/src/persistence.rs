@@ -232,6 +232,10 @@ pub struct AppSettings {
     /// applied.
     pub code_font_size: f32,
     pub daemon_exposure: DaemonExposureSettings,
+    /// Preferred target of the header's "open project in app" control, by
+    /// catalog id. `None` — and an id no longer installed — fall back to the
+    /// platform file manager.
+    pub open_in_app: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -244,6 +248,7 @@ impl Default for AppSettings {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             daemon_exposure: DaemonExposureSettings::default(),
+            open_in_app: None,
         }
     }
 }
@@ -339,6 +344,8 @@ pub struct PersistedState {
     pub code_font_size: f32,
     #[serde(default)]
     pub daemon_exposure: DaemonExposureSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_in_app: Option<String>,
     #[serde(default = "default_sidebar_visibility")]
     pub sidebar_visible: bool,
     #[serde(default = "default_right_panel_visibility")]
@@ -404,6 +411,7 @@ impl PersistedState {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             code_font_size: DEFAULT_CODE_FONT_SIZE,
             daemon_exposure: DaemonExposureSettings::default(),
+            open_in_app: None,
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -523,6 +531,7 @@ impl PersistedState {
             ui_font_size: self.ui_font_size,
             code_font_size: self.code_font_size,
             daemon_exposure: self.daemon_exposure.clone(),
+            open_in_app: self.open_in_app.clone(),
         }
     }
 
@@ -555,6 +564,7 @@ impl PersistedState {
         self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
         self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.daemon_exposure = settings.daemon_exposure;
+        self.open_in_app = settings.open_in_app;
     }
 
     fn apply_app_state(&mut self, app_state: AppState) {

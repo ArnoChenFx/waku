@@ -1168,6 +1168,11 @@ pub struct Waku {
     usage_chart_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     computer_use_app_icons: RefCell<HashMap<String, Option<std::sync::Arc<gpui::Image>>>>,
     computer_use_app_icon_loads: RefCell<HashSet<String>>,
+    /// Installed folder-capable apps for the header's "open project in"
+    /// control, icons included, resolved once at launch on the background
+    /// executor. Render only reads this; empty means not resolved yet (or
+    /// nothing to offer) and hides the control.
+    open_in_apps: Rc<Vec<crate::platform::ExternalApp>>,
     model_picker_tab: ModelPickerTab,
     /// Keyboard cursor over the model picker's filtered rows. `None` means the
     /// keyboard has not moved yet, so `enter` takes the first row.
@@ -2700,6 +2705,7 @@ impl Waku {
                 usage_chart_bounds: Rc::default(),
                 computer_use_app_icons: RefCell::new(HashMap::new()),
                 computer_use_app_icon_loads: RefCell::new(HashSet::new()),
+                open_in_apps: Rc::new(Vec::new()),
                 model_picker_tab,
                 model_picker_highlight: None,
                 model_picker_scroll: ScrollHandle::new(),
@@ -2919,6 +2925,9 @@ impl Waku {
             // The skill library too: the Skills settings page must open onto
             // data, not a scan.
             this.ensure_skills_catalog(false, cx);
+            // And the header's "open project in app" targets, so its menu
+            // lists installed apps and icons without ever probing on a frame.
+            this.detect_open_in_apps(cx);
         });
         entity
     }
