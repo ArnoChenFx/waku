@@ -1273,6 +1273,35 @@ impl Waku {
             },
         );
 
+        let selected_font_size = self.state.editor_font_size;
+        let weak = cx.entity().downgrade();
+        let font_size_handle = self.menu_handle("editor-font-size-selector", cx);
+        let font_size_selector = dropdown_menu(
+            MenuChip::new("editor-font-size-selector")
+                .label(editor_font_size_label(selected_font_size))
+                .outlined()
+                .selected(font_size_handle.is_open())
+                .w(px(116.0))
+                .justify_between(),
+            "editor-font-size-selector-menu",
+            &font_size_handle,
+            MenuAlign::BelowRight,
+            move |_| {
+                EDITOR_FONT_SIZES
+                    .into_iter()
+                    .map(|size| {
+                        let weak = weak.clone();
+                        MenuItem::new(editor_font_size_label(size), move |_, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.set_editor_font_size(size, cx);
+                            });
+                        })
+                        .selected(size == selected_font_size)
+                    })
+                    .collect()
+            },
+        );
+
         let weak = cx.entity().downgrade();
         let language_handle = self.menu_handle("language-selector", cx);
         let language_selector = dropdown_menu(
@@ -1372,7 +1401,49 @@ impl Waku {
                     )
                     .child(language_selector),
             )
+            .child(div().mx(px(20.0)).h(px(1.0)).bg(theme.border))
+            .child(
+                div()
+                    .w_full()
+                    .min_h(px(60.0))
+                    .px(px(20.0))
+                    .py(px(12.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(24.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(13.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(tr!("settings.editor_font_size")),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(5.0))
+                                    .text_size(px(12.5))
+                                    .line_height(px(18.0))
+                                    .text_color(theme.text_secondary)
+                                    .child(tr!("settings.editor_font_size_description")),
+                            ),
+                    )
+                    .child(font_size_selector),
+            )
             .into_any_element()
+    }
+
+    fn set_editor_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        let size = waku_client::persistence::sanitized_editor_font_size(size);
+        if self.state.editor_font_size == size {
+            return;
+        }
+        self.state.editor_font_size = size;
+        self.save();
+        cx.notify();
     }
 
     fn render_providers_settings(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2260,6 +2331,19 @@ impl Waku {
 
 /// "Checked …" caption for the Providers page. Recomputed whenever the page
 /// redraws; precision beyond the minute is noise here.
+/// Sizes offered by the editor font-size dropdown. A hand-edited `app.json`
+/// may hold values outside this list; they render as-is and simply select
+/// nothing here.
+const EDITOR_FONT_SIZES: [f32; 8] = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
+
+fn editor_font_size_label(size: f32) -> String {
+    if size.fract() == 0.0 {
+        format!("{size:.0} px")
+    } else {
+        format!("{size} px")
+    }
+}
+
 fn detection_checked_label(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     if seconds < 90 {

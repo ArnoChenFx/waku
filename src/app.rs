@@ -1321,6 +1321,12 @@ pub struct Waku {
     right_panel_diff_tree_scrollbar: Rc<ScrollbarState>,
     right_panel_editor_scroll_handle: ScrollHandle,
     right_panel_editor_scrollbar: Rc<ScrollbarState>,
+    /// Rendered-markdown preview of the visible file editor, cached per path
+    /// the way `skills_detail_markdown` caches the skill document.
+    file_preview_markdown: RefCell<Option<(String, MarkdownView)>>,
+    file_preview_selection: TranscriptSelection,
+    file_preview_scroll_handle: ScrollHandle,
+    file_preview_scrollbar: Rc<ScrollbarState>,
     right_panel_pending_tab_reveal: Option<usize>,
     right_panel_pending_terminal_focus: Option<Uuid>,
     right_panel_expanded_paths: HashSet<PathBuf>,
@@ -2769,6 +2775,10 @@ impl Waku {
                 right_panel_diff_tree_scrollbar: ScrollbarState::new(),
                 right_panel_editor_scroll_handle: ScrollHandle::new(),
                 right_panel_editor_scrollbar: ScrollbarState::new(),
+                file_preview_markdown: RefCell::new(None),
+                file_preview_selection: TranscriptSelection::default(),
+                file_preview_scroll_handle: ScrollHandle::new(),
+                file_preview_scrollbar: ScrollbarState::new(),
                 right_panel_pending_tab_reveal: None,
                 right_panel_pending_terminal_focus: None,
                 right_panel_expanded_paths: HashSet::new(),

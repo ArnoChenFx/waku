@@ -2511,7 +2511,7 @@ impl Waku {
                 index,
                 &format!("activity-diff-{id}"),
                 &self.transcript_selection,
-                DiffRowStyle::ACTIVITY,
+                DiffRowStyle::activity(self.state.editor_font_size),
                 theme,
             ),
         }

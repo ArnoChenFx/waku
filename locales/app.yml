@@ -121,7 +121,7 @@ settings.computer_use:
 settings.general_keywords:
   en: general local projects conversations privacy analytics telemetry anonymous sharing updates automatic sparkle version
 settings.appearance_keywords:
-  en: appearance theme system light dark language english chinese simplified
+  en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
   en: providers agents models cli version install detect claude codex cursor opencode amp grok pi
 settings.skills:
@@ -272,6 +272,10 @@ settings.theme:
   en: Theme
 settings.theme_description:
   en: Choose between system, light, or dark themes
+settings.editor_font_size:
+  en: Editor font size
+settings.editor_font_size_description:
+  en: Text size in the file editor, markdown preview, and diffs
 settings.theme_system:
   en: System
 settings.theme_light:
@@ -1519,6 +1523,10 @@ files.could_not_save_read_only:
   en: "Could not save %{path}: file is not editable"
 files.could_not_save:
   en: "Could not save %{path}: %{error}"
+files.preview_markdown:
+  en: Preview markdown
+files.edit_markdown_source:
+  en: Edit source
 files.resize_tree:
   en: Resize file tree
 files.refresh:

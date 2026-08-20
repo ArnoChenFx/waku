@@ -58,7 +58,7 @@ settings.usage: 用量
 settings.daemon: 守护进程
 settings.computer_use: 电脑操作
 settings.general_keywords: 通用 本地 项目 对话 隐私 匿名 使用数据 分析 分享 更新 自动 版本
-settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体
+settings.appearance_keywords: 外观 主题 系统 浅色 深色 语言 英语 中文 简体 字号 字体 大小 编辑器
 settings.providers_keywords: 服务商 智能体 模型 命令行 版本 安装 检测 claude codex cursor opencode amp grok pi
 settings.skills: 技能
 settings.skills_keywords: 技能 技能库 智能体 禁用 启用 删除 claude codex cursor opencode pi amp 共享
@@ -134,6 +134,8 @@ web.error_secure_websocket_required: 安全的 Waku Web 页面只能通过 wss:/
 web.error_daemon_token_required: 请输入守护进程令牌
 settings.theme: 主题
 settings.theme_description: 选择跟随系统、浅色或深色主题
+settings.editor_font_size: 编辑器字号
+settings.editor_font_size_description: 文件编辑器、Markdown 预览与差分视图的文字大小
 settings.theme_system: 跟随系统
 settings.theme_light: 浅色
 settings.theme_dark: 深色
@@ -739,6 +741,8 @@ files.unable_to_edit: "无法编辑此文件：%{error}"
 files.could_not_save_opening: "无法保存 %{path}：文件仍在打开"
 files.could_not_save_read_only: "无法保存 %{path}：文件不可编辑"
 files.could_not_save: "无法保存 %{path}：%{error}"
+files.preview_markdown: 预览 Markdown
+files.edit_markdown_source: 编辑源码
 files.resize_tree: 调整文件树宽度
 files.refresh: 刷新文件
 files.loading: 正在加载文件…

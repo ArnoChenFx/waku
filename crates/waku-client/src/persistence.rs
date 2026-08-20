@@ -44,6 +44,10 @@ fn default_computer_use_enabled() -> bool {
     false
 }
 
+fn default_editor_font_size() -> f32 {
+    DEFAULT_EDITOR_FONT_SIZE
+}
+
 fn default_analytics_enabled() -> bool {
     true
 }
@@ -215,6 +219,9 @@ pub struct AppSettings {
     pub favorite_models: Vec<FavoriteModel>,
     pub theme: ThemePreference,
     pub language: AppLanguage,
+    /// Text size for the file editor, markdown preview, and diff rows, in
+    /// pixels. Hand-edited values are clamped when applied.
+    pub editor_font_size: f32,
     pub daemon_exposure: DaemonExposureSettings,
 }
 
@@ -225,8 +232,20 @@ impl Default for AppSettings {
             favorite_models: Vec::new(),
             theme: ThemePreference::System,
             language: AppLanguage::default(),
+            editor_font_size: DEFAULT_EDITOR_FONT_SIZE,
             daemon_exposure: DaemonExposureSettings::default(),
         }
+    }
+}
+
+pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 14.0;
+
+/// Bounds a possibly hand-edited font size to something the layout survives.
+pub fn sanitized_editor_font_size(size: f32) -> f32 {
+    if size.is_finite() {
+        size.clamp(9.0, 24.0)
+    } else {
+        DEFAULT_EDITOR_FONT_SIZE
     }
 }
 
@@ -259,6 +278,10 @@ struct AppState {
     sidebar_width: f32,
     #[serde(default = "default_right_panel_width")]
     right_panel_width: f32,
+    /// Whether markdown files in the right panel open as a rendered preview
+    /// instead of source. One global mode, not per file.
+    #[serde(default)]
+    markdown_preview: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window_state: Option<PersistedWindowState>,
 }
@@ -291,6 +314,8 @@ pub struct PersistedState {
     pub theme: ThemePreference,
     #[serde(default)]
     pub language: AppLanguage,
+    #[serde(default = "default_editor_font_size")]
+    pub editor_font_size: f32,
     #[serde(default)]
     pub daemon_exposure: DaemonExposureSettings,
     #[serde(default = "default_sidebar_visibility")]
@@ -301,6 +326,10 @@ pub struct PersistedState {
     pub sidebar_width: f32,
     #[serde(default = "default_right_panel_width")]
     pub right_panel_width: f32,
+    /// Whether markdown files in the right panel open as a rendered preview
+    /// instead of source. One global mode, not per file.
+    #[serde(default)]
+    pub markdown_preview: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_state: Option<PersistedWindowState>,
     #[serde(default = "default_computer_use_enabled")]
@@ -351,11 +380,13 @@ impl PersistedState {
             favorite_models: Vec::new(),
             theme: ThemePreference::System,
             language: AppLanguage::default(),
+            editor_font_size: DEFAULT_EDITOR_FONT_SIZE,
             daemon_exposure: DaemonExposureSettings::default(),
             sidebar_visible: true,
             right_panel_visible: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             right_panel_width: DEFAULT_RIGHT_PANEL_WIDTH,
+            markdown_preview: false,
             window_state: None,
             computer_use_enabled: false,
             computer_use_allowed_apps: Vec::new(),
@@ -467,6 +498,7 @@ impl PersistedState {
             favorite_models: self.favorite_models.clone(),
             theme: self.theme,
             language: self.language,
+            editor_font_size: self.editor_font_size,
             daemon_exposure: self.daemon_exposure.clone(),
         }
     }
@@ -487,6 +519,7 @@ impl PersistedState {
             right_panel_visible: self.right_panel_visible,
             sidebar_width: self.sidebar_width,
             right_panel_width: self.right_panel_width,
+            markdown_preview: self.markdown_preview,
             window_state: self.window_state,
         }
     }
@@ -496,6 +529,7 @@ impl PersistedState {
         self.favorite_models = settings.favorite_models;
         self.theme = settings.theme;
         self.language = settings.language;
+        self.editor_font_size = sanitized_editor_font_size(settings.editor_font_size);
         self.daemon_exposure = settings.daemon_exposure;
     }
 
@@ -513,6 +547,7 @@ impl PersistedState {
         self.right_panel_visible = app_state.right_panel_visible;
         self.sidebar_width = app_state.sidebar_width;
         self.right_panel_width = app_state.right_panel_width;
+        self.markdown_preview = app_state.markdown_preview;
         self.window_state = app_state.window_state;
     }
 

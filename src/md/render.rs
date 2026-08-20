@@ -97,6 +97,19 @@ impl Metrics {
         code_line_height: 16.0,
         block_gap: 6.0,
     };
+
+    /// Document scale derived from the user's editor font size, keeping
+    /// [`Metrics::BODY`]'s proportions.
+    pub fn document(text_size: f32) -> Self {
+        let code_text_size = (text_size * 0.85).round();
+        Self {
+            text_size,
+            line_height: (text_size * 1.55).round(),
+            code_text_size,
+            code_line_height: (code_text_size * 1.5).round(),
+            block_gap: (text_size * 0.72).round(),
+        }
+    }
 }
 
 pub const SANS_FAMILY: &str = ".SystemUIFont";
