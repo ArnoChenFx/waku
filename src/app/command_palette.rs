@@ -995,7 +995,7 @@ impl Waku {
                     .child(
                         div()
                             .mt(px(12.0))
-                            .text_size(px(13.0))
+                            .text_size(sp(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary)
                             .child(tr!("command_palette.no_results")),
@@ -1003,7 +1003,7 @@ impl Waku {
                     .child(
                         div()
                             .mt(px(5.0))
-                            .text_size(px(11.5))
+                            .text_size(sp(11.5))
                             .text_color(theme.text_tertiary)
                             .child(tr!("command_palette.no_results_hint")),
                     ),
@@ -1019,7 +1019,7 @@ impl Waku {
                             .pt(px(10.0))
                             .flex()
                             .items_center()
-                            .text_size(px(11.0))
+                            .text_size(sp(11.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_tertiary)
                             .child(item.section.label()),
@@ -1094,7 +1094,7 @@ impl Waku {
                                             div()
                                                 .min_w_0()
                                                 .truncate()
-                                                .text_size(px(14.0))
+                                                .text_size(sp(14.0))
                                                 .font_weight(if highlighted {
                                                     FontWeight::MEDIUM
                                                 } else {
@@ -1112,7 +1112,7 @@ impl Waku {
                                                 div()
                                                     .min_w_0()
                                                     .truncate()
-                                                    .text_size(px(11.5))
+                                                    .text_size(sp(11.5))
                                                     .text_color(theme.text_tertiary)
                                                     .child(detail),
                                             )
@@ -1125,7 +1125,7 @@ impl Waku {
                                             .w_full()
                                             .overflow_hidden()
                                             .whitespace_nowrap()
-                                            .text_size(px(11.5))
+                                            .text_size(sp(11.5))
                                             .child(palette_content_match_text(
                                                 &matched,
                                                 &search_query,
@@ -1147,7 +1147,7 @@ impl Waku {
                                     .items_center()
                                     .justify_center()
                                     .bg(theme.overlay_strong)
-                                    .text_size(px(11.5))
+                                    .text_size(sp(11.5))
                                     .text_color(theme.text_tertiary)
                                     .child(shortcut),
                             )
@@ -1205,7 +1205,7 @@ impl Waku {
                         .items_center()
                         .border_b_1()
                         .border_color(theme.border)
-                        .text_size(px(15.5))
+                        .text_size(sp(15.5))
                         .text_color(theme.text)
                         .child(
                             div()

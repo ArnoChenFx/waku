@@ -15,7 +15,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::theme::Theme;
+use crate::theme::{Theme, sp};
 
 actions!(
     composer,
@@ -2427,8 +2427,8 @@ impl Render for TextInput {
                     .overflow_y_scroll()
                     .track_scroll(&scroll_handle)
                     .px(padding_x)
-                    .line_height(px(22.0))
-                    .text_size(px(13.5))
+                    .line_height(sp(22.0))
+                    .text_size(sp(13.5))
             })
             // A single-line field never wraps: the overlong remainder slides
             // horizontally under this clipped viewport to follow the caret —

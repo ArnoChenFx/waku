@@ -506,7 +506,7 @@ impl Waku {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(9.5))
+                    .text_size(sp(9.5))
                     .text_color(theme.text_ghost)
                     .child(SharedString::from(footer)),
             )
@@ -711,14 +711,14 @@ impl Waku {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_size(px(9.5))
+                            .text_size(sp(9.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(label.to_uppercase())),
                     )
                     .child(
                         div()
-                            .text_size(px(9.5))
+                            .text_size(sp(9.5))
                             .text_color(theme.text_ghost)
                             .child(SharedString::from(count.to_string())),
                     )
@@ -805,7 +805,7 @@ impl Waku {
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(12.0))
+                                            .text_size(sp(12.0))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(if enabled {
                                                 theme.text
@@ -818,7 +818,7 @@ impl Waku {
                                         element.child(
                                             div()
                                                 .flex_none()
-                                                .text_size(px(8.5))
+                                                .text_size(sp(8.5))
                                                 .text_color(theme.warning)
                                                 .child(tr!("skills.disabled_badge")),
                                         )
@@ -827,7 +827,7 @@ impl Waku {
                             .child(
                                 div()
                                     .mt(px(1.0))
-                                    .text_size(px(10.0))
+                                    .text_size(sp(10.0))
                                     .text_color(theme.text_tertiary)
                                     .truncate()
                                     .child(SharedString::from(if skill.description.is_empty() {
@@ -973,7 +973,7 @@ impl Waku {
                 .items_center()
                 .gap(px(5.0))
                 .cursor_default()
-                .text_size(px(10.5))
+                .text_size(sp(10.5))
                 .text_color(theme.text_secondary)
                 .hover(|element| element.bg(theme.overlay))
                 .child(icon(icon_path, 11.0, theme.text_tertiary))
@@ -1060,7 +1060,7 @@ impl Waku {
             .items_center()
             .gap(px(5.0))
             .cursor_default()
-            .text_size(px(10.5))
+            .text_size(sp(10.5))
             .text_color(if armed {
                 theme.danger
             } else {
@@ -1113,7 +1113,7 @@ impl Waku {
             let ctx = MarkdownCtx::new(
                 format!("skill-md-{}", skill.row_key),
                 &palette,
-                MarkdownMetrics::COMPACT,
+                self.scaled_markdown_metrics(MarkdownMetrics::COMPACT),
                 self.skills_selection.clone(),
             );
             div()
@@ -1124,7 +1124,7 @@ impl Waku {
                 .child(
                     div()
                         .font_family(crate::md::render::MONO_FAMILY)
-                        .text_size(px(9.5))
+                        .text_size(sp(9.5))
                         .text_color(theme.text_ghost)
                         .child("SKILL.md"),
                 )
@@ -1194,7 +1194,7 @@ impl Waku {
                                         div()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(15.0))
+                                            .text_size(sp(15.0))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(if enabled {
                                                 theme.text
@@ -1207,7 +1207,7 @@ impl Waku {
                                         element.child(
                                             div()
                                                 .flex_none()
-                                                .text_size(px(9.5))
+                                                .text_size(sp(9.5))
                                                 .text_color(theme.warning)
                                                 .child(tr!("skills.disabled_badge")),
                                         )
@@ -1216,7 +1216,7 @@ impl Waku {
                             .child(
                                 div()
                                     .mt(px(2.0))
-                                    .text_size(px(10.5))
+                                    .text_size(sp(10.5))
                                     .text_color(theme.text_tertiary)
                                     .truncate()
                                     .child(SharedString::from(caption)),
@@ -1227,8 +1227,8 @@ impl Waku {
             .child(
                 div()
                     .mt(px(14.0))
-                    .text_size(px(11.5))
-                    .line_height(px(17.0))
+                    .text_size(sp(11.5))
+                    .line_height(sp(17.0))
                     .text_color(theme.text_secondary)
                     .child(SharedString::from(if skill.description.is_empty() {
                         tr!("skills.no_description")
@@ -1245,7 +1245,7 @@ impl Waku {
                         .items_center()
                         .gap(px(6.0))
                         .child(icon("icons/alert.svg", 11.0, theme.warning))
-                        .child(div().text_size(px(10.0)).text_color(theme.warning).child(
+                        .child(div().text_size(sp(10.0)).text_color(theme.warning).child(
                             SharedString::from(if skill.duplicates == 1 {
                                 tr!("skills.duplicate_one")
                             } else {
@@ -1305,7 +1305,7 @@ fn skills_empty_state(theme: &Theme) -> Div {
         )
         .child(
             div()
-                .text_size(px(13.0))
+                .text_size(sp(13.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
                 .child(tr!("skills.empty_title")),
@@ -1313,8 +1313,8 @@ fn skills_empty_state(theme: &Theme) -> Div {
         .child(
             div()
                 .max_w(px(420.0))
-                .text_size(px(11.5))
-                .line_height(px(17.0))
+                .text_size(sp(11.5))
+                .line_height(sp(17.0))
                 .text_color(theme.text_secondary)
                 .text_center()
                 .child(tr!("skills.empty_description")),
@@ -1333,7 +1333,7 @@ fn skills_detail_placeholder(theme: &Theme) -> Div {
         .child(icon("icons/package.svg", 22.0, theme.text_ghost))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(sp(11.0))
                 .text_color(theme.text_ghost)
                 .child(tr!("skills.select_placeholder")),
         )
@@ -1353,7 +1353,7 @@ fn skill_info_row(theme: &Theme, label: String, value: AnyElement, last: bool) -
             div()
                 .w(px(84.0))
                 .flex_none()
-                .text_size(px(10.5))
+                .text_size(sp(10.5))
                 .text_color(theme.text_tertiary)
                 .child(SharedString::from(label)),
         )
@@ -1362,7 +1362,7 @@ fn skill_info_row(theme: &Theme, label: String, value: AnyElement, last: bool) -
 
 fn plain_info_value(theme: &Theme, value: String) -> AnyElement {
     div()
-        .text_size(px(10.5))
+        .text_size(sp(10.5))
         .text_color(theme.text_secondary)
         .child(SharedString::from(value))
         .into_any_element()
@@ -1393,7 +1393,7 @@ fn skills_status_row(theme: &Theme, message: String) -> Div {
     div()
         .px(px(18.0))
         .py(px(16.0))
-        .text_size(px(11.0))
+        .text_size(sp(11.0))
         .text_color(theme.text_tertiary)
         .child(SharedString::from(message))
 }

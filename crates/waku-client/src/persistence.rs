@@ -44,8 +44,12 @@ fn default_computer_use_enabled() -> bool {
     false
 }
 
-fn default_editor_font_size() -> f32 {
-    DEFAULT_EDITOR_FONT_SIZE
+fn default_ui_font_size() -> f32 {
+    DEFAULT_UI_FONT_SIZE
+}
+
+fn default_code_font_size() -> f32 {
+    DEFAULT_CODE_FONT_SIZE
 }
 
 fn default_analytics_enabled() -> bool {
@@ -219,9 +223,14 @@ pub struct AppSettings {
     pub favorite_models: Vec<FavoriteModel>,
     pub theme: ThemePreference,
     pub language: AppLanguage,
-    /// Text size for the file editor, markdown preview, and diff rows, in
-    /// pixels. Hand-edited values are clamped when applied.
-    pub editor_font_size: f32,
+    /// Base text size for the interface, in pixels: chrome and prose are
+    /// authored against the 14px default and scale from it. Hand-edited
+    /// values are clamped when applied.
+    pub ui_font_size: f32,
+    /// Text size for code surfaces — the file editor, diffs, code blocks,
+    /// and tool output — in pixels. Hand-edited values are clamped when
+    /// applied.
+    pub code_font_size: f32,
     pub daemon_exposure: DaemonExposureSettings,
 }
 
@@ -232,21 +241,31 @@ impl Default for AppSettings {
             favorite_models: Vec::new(),
             theme: ThemePreference::System,
             language: AppLanguage::default(),
-            editor_font_size: DEFAULT_EDITOR_FONT_SIZE,
+            ui_font_size: DEFAULT_UI_FONT_SIZE,
+            code_font_size: DEFAULT_CODE_FONT_SIZE,
             daemon_exposure: DaemonExposureSettings::default(),
         }
     }
 }
 
-pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 14.0;
+pub const DEFAULT_UI_FONT_SIZE: f32 = 14.0;
+pub const DEFAULT_CODE_FONT_SIZE: f32 = 13.0;
 
 /// Bounds a possibly hand-edited font size to something the layout survives.
-pub fn sanitized_editor_font_size(size: f32) -> f32 {
+fn sanitized_font_size(size: f32, fallback: f32) -> f32 {
     if size.is_finite() {
         size.clamp(9.0, 24.0)
     } else {
-        DEFAULT_EDITOR_FONT_SIZE
+        fallback
     }
+}
+
+pub fn sanitized_ui_font_size(size: f32) -> f32 {
+    sanitized_font_size(size, DEFAULT_UI_FONT_SIZE)
+}
+
+pub fn sanitized_code_font_size(size: f32) -> f32 {
+    sanitized_font_size(size, DEFAULT_CODE_FONT_SIZE)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -314,8 +333,10 @@ pub struct PersistedState {
     pub theme: ThemePreference,
     #[serde(default)]
     pub language: AppLanguage,
-    #[serde(default = "default_editor_font_size")]
-    pub editor_font_size: f32,
+    #[serde(default = "default_ui_font_size")]
+    pub ui_font_size: f32,
+    #[serde(default = "default_code_font_size")]
+    pub code_font_size: f32,
     #[serde(default)]
     pub daemon_exposure: DaemonExposureSettings,
     #[serde(default = "default_sidebar_visibility")]
@@ -380,7 +401,8 @@ impl PersistedState {
             favorite_models: Vec::new(),
             theme: ThemePreference::System,
             language: AppLanguage::default(),
-            editor_font_size: DEFAULT_EDITOR_FONT_SIZE,
+            ui_font_size: DEFAULT_UI_FONT_SIZE,
+            code_font_size: DEFAULT_CODE_FONT_SIZE,
             daemon_exposure: DaemonExposureSettings::default(),
             sidebar_visible: true,
             right_panel_visible: false,
@@ -498,7 +520,8 @@ impl PersistedState {
             favorite_models: self.favorite_models.clone(),
             theme: self.theme,
             language: self.language,
-            editor_font_size: self.editor_font_size,
+            ui_font_size: self.ui_font_size,
+            code_font_size: self.code_font_size,
             daemon_exposure: self.daemon_exposure.clone(),
         }
     }
@@ -529,7 +552,8 @@ impl PersistedState {
         self.favorite_models = settings.favorite_models;
         self.theme = settings.theme;
         self.language = settings.language;
-        self.editor_font_size = sanitized_editor_font_size(settings.editor_font_size);
+        self.ui_font_size = sanitized_ui_font_size(settings.ui_font_size);
+        self.code_font_size = sanitized_code_font_size(settings.code_font_size);
         self.daemon_exposure = settings.daemon_exposure;
     }
 

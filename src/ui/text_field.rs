@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::input::TextInput;
-use crate::theme::Theme;
+use crate::theme::{Theme, sp};
 
 use super::icon;
 
@@ -76,8 +76,8 @@ impl RenderOnce for TextField {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(px(11.5))
-            .line_height(px(16.0))
+            .text_size(sp(11.5))
+            .line_height(sp(16.0))
             .when_some(self.icon, |element, (path, size)| {
                 element.child(icon(path, size, theme.text_tertiary))
             })

@@ -59,7 +59,7 @@ use crate::persistence::{
 use crate::query::{Query, QueryCache};
 use crate::review_diff::{Snapshot as ReviewDiffSnapshot, Source as ReviewDiffSource};
 use crate::terminal::TerminalView;
-use crate::theme::{Theme, ThemePreference};
+use crate::theme::{Theme, ThemePreference, sp};
 use crate::ui::text_field::TextField;
 use crate::ui::{
     MenuChip, ProjectNameSelector, activity_icon, activity_noun, contain_scroll, file_icon, icon,
@@ -795,7 +795,7 @@ fn traits_choice(theme: Theme, label: String, is_default: bool, selected: bool) 
                         .bg(theme.overlay)
                         .flex()
                         .items_center()
-                        .text_size(px(9.0))
+                        .text_size(sp(9.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text_tertiary)
                         .child(tr!("common.default")),
@@ -1867,6 +1867,11 @@ impl Waku {
             eprintln!("could not normalize daemon settings after migration: {error:#}");
         }
         crate::i18n::set_language(state.language);
+        // Chrome text is authored in `sp` rems against the default UI font
+        // size, so the window's rem size *is* the UI font size setting.
+        window.set_rem_size(px(waku_client::persistence::sanitized_ui_font_size(
+            state.ui_font_size,
+        )));
         let analytics = crate::analytics::Analytics::new(
             state.language.locale(),
             state.analytics_id,

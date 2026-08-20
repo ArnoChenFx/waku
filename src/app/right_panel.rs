@@ -309,7 +309,7 @@ pub(super) struct DiffRowStyle {
 }
 
 impl DiffRowStyle {
-    /// Review-tab rows at the user's editor font size. The gutter holds a
+    /// Review-tab rows at the user's code font size. The gutter holds a
     /// right-aligned line number: ~0.6em per mono digit, five digits, plus
     /// its padding and border.
     pub(super) fn review(text_size: f32) -> Self {
@@ -2400,7 +2400,7 @@ impl Waku {
                             .flex_1()
                             .line_clamp(1)
                             .text_ellipsis()
-                            .text_size(px(12.0))
+                            .text_size(sp(12.0))
                             .text_color(if active {
                                 theme.text
                             } else {
@@ -2569,7 +2569,7 @@ impl Waku {
                     .items_center()
                     .child(
                         div()
-                            .text_size(px(13.0))
+                            .text_size(sp(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(tr!("right_panel.open_surface")),
@@ -2577,7 +2577,7 @@ impl Waku {
                     .child(
                         div()
                             .mt(px(5.0))
-                            .text_size(px(11.0))
+                            .text_size(sp(11.0))
                             .text_color(theme.text_tertiary)
                             .child(tr!("right_panel.choose_surface")),
                     )
@@ -2650,7 +2650,7 @@ impl Waku {
             .child(
                 div()
                     .mt(px(12.0))
-                    .text_size(px(12.5))
+                    .text_size(sp(12.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(label),
@@ -2658,8 +2658,8 @@ impl Waku {
             .child(
                 div()
                     .mt(px(4.0))
-                    .text_size(px(10.5))
-                    .line_height(px(15.0))
+                    .text_size(sp(10.5))
+                    .line_height(sp(15.0))
                     .text_color(theme.text_tertiary)
                     .whitespace_normal()
                     .line_clamp(2)
@@ -2745,7 +2745,7 @@ impl Waku {
                         .min_w_0()
                         .flex_1()
                         .truncate()
-                        .text_size(px(11.5))
+                        .text_size(sp(11.5))
                         .text_color(theme.text_secondary)
                         .child(entry.name),
                 );
@@ -2786,7 +2786,7 @@ impl Waku {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(px(11.5))
+                            .text_size(sp(11.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_secondary)
                             .child(project_name),
@@ -2893,7 +2893,7 @@ impl Waku {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(px(11.0))
+                            .text_size(sp(11.0))
                             .text_color(theme.text_secondary)
                             .child(relative_path.clone()),
                     )
@@ -3120,7 +3120,7 @@ impl Waku {
         const GUTTER_PAD_RIGHT: f32 = 8.0;
         const CONTENT_PAD_TOP: f32 = 6.0;
 
-        let text_size = self.state.editor_font_size;
+        let text_size = self.state.code_font_size;
         let line_height = (text_size * 1.5).round();
 
         // An open find bar follows whichever file this body is showing; a
@@ -3269,7 +3269,7 @@ impl Waku {
         let ctx = MarkdownCtx::new(
             format!("file-preview-{relative_path}"),
             &palette,
-            MarkdownMetrics::document(self.state.editor_font_size),
+            MarkdownMetrics::document(self.state.ui_font_size, self.state.code_font_size),
             self.file_preview_selection.clone(),
         )
         .with_link_handler(self.markdown_link_handler.clone());
@@ -3622,14 +3622,14 @@ impl Waku {
             .child(source)
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(sp(11.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.success)
                     .child(format!("+{additions}")),
             )
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(sp(11.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.danger)
                     .child(format!("-{deletions}")),
@@ -3637,7 +3637,7 @@ impl Waku {
             .when(truncated, |row| {
                 row.child(
                     div()
-                        .text_size(px(10.5))
+                        .text_size(sp(10.5))
                         .text_color(theme.warning)
                         .child(tr!("diff.truncated")),
                 )
@@ -3701,7 +3701,7 @@ impl Waku {
             return div().into_any_element();
         };
         let theme = Theme::current(cx);
-        let style = DiffRowStyle::review(self.state.editor_font_size);
+        let style = DiffRowStyle::review(self.state.code_font_size);
         // Chrome rows keep their gutters flush with the code rows'.
         let gutter_width = style.gutter_width();
 
@@ -4132,7 +4132,7 @@ impl Waku {
                                 .min_w_0()
                                 .flex_1()
                                 .truncate()
-                                .text_size(px(11.0))
+                                .text_size(sp(11.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_secondary)
                                 .child(name),
@@ -4194,7 +4194,7 @@ impl Waku {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
-                                    .text_size(px(11.0))
+                                    .text_size(sp(11.0))
                                     .text_color(if selected {
                                         theme.text
                                     } else {
@@ -4214,7 +4214,7 @@ impl Waku {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(px(9.0))
+                                    .text_size(sp(9.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(status_color)
                                     .child(status),
@@ -4249,7 +4249,7 @@ impl Waku {
             .pb(px(32.0))
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(sp(13.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(title),
@@ -4259,8 +4259,8 @@ impl Waku {
                     .mt(px(6.0))
                     .max_w(px(300.0))
                     .text_center()
-                    .text_size(px(11.0))
-                    .line_height(px(17.0))
+                    .text_size(sp(11.0))
+                    .line_height(sp(17.0))
                     .text_color(theme.text_tertiary)
                     .child(description),
             )
