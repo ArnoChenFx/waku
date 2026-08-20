@@ -2229,7 +2229,7 @@ impl Waku {
             || self.command_palette.is_open()
             || self.commit_dialog.is_some()
             || self.image_preview.is_some()
-            || self.composer.read(cx).context_menu_open()
+            || self.composer.read(cx).context_menu_open(cx)
             || self
                 .right_panel_browsers
                 .values()
@@ -2876,7 +2876,7 @@ impl Waku {
         relative_path: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Entity<ComposerInput>, bool, bool) {
+    ) -> (Entity<TextInput>, bool, bool) {
         if let Some(editor) = self.right_panel_file_editors.get(relative_path) {
             return (editor.state.clone(), editor.writable, editor.dirty);
         }
@@ -2886,8 +2886,9 @@ impl Waku {
         // fills it in from the background executor a frame or two later.
         let language = file_highlighter_language(relative_path);
         let state = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .code_editor(Some(language))
+            TextInput::new(window, cx)
+                .multi_line()
+                .syntax(Some(language))
                 .read_only(true)
         });
 
@@ -2909,8 +2910,8 @@ impl Waku {
         let subscribed_path = relative_path.to_owned();
         cx.subscribe(
             &state,
-            move |this: &mut Self, state, event: &ComposerEvent, cx| {
-                if !matches!(event, ComposerEvent::Edited) {
+            move |this: &mut Self, state, event: &InputEvent, cx| {
+                if !matches!(event, InputEvent::Edited) {
                     return;
                 }
                 let value = state.read(cx).content().to_owned();
@@ -2934,8 +2935,8 @@ impl Waku {
         let focused_path = relative_path.to_owned();
         cx.subscribe(
             &state,
-            move |this: &mut Self, _, event: &ComposerEvent, cx| {
-                if matches!(event, ComposerEvent::Focus) {
+            move |this: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Focus) {
                     this.reload_right_panel_file_if_clean(focused_path.as_str(), cx);
                 }
             },
@@ -3054,7 +3055,7 @@ impl Waku {
     fn render_file_editor_body(
         &mut self,
         relative_path: &str,
-        editor_state: &Entity<ComposerInput>,
+        editor_state: &Entity<TextInput>,
         pane_width: f32,
         writable: bool,
         window: &mut Window,

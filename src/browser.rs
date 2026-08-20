@@ -33,7 +33,7 @@ use gpui::{
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::{AsyncApp, ForegroundExecutor, WeakEntity};
 
-use crate::input::{ComposerEvent, ComposerInput};
+use crate::input::{InputEvent, TextInput};
 use crate::theme::Theme;
 use crate::ui::icon;
 use crate::ui::text_field::TextField;
@@ -1152,7 +1152,7 @@ impl Deferred {
 
 pub struct BrowserView {
     focus_handle: FocusHandle,
-    address: Entity<ComposerInput>,
+    address: Entity<TextInput>,
     host: Option<Rc<WebviewHost>>,
     /// Why the webview could not be created, shown in place of the page.
     host_error: Option<String>,
@@ -1192,19 +1192,17 @@ pub struct BrowserView {
 impl BrowserView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let address = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
                 .select_all_on_focus_click()
                 .placeholder(tr!("input.search_or_enter_address"))
         });
 
         let submit_subscription = cx.subscribe(
             &address,
-            |this: &mut Self, address, event: &ComposerEvent, cx| match event {
-                ComposerEvent::Submit(text) => this.navigate_to_input(text.clone(), cx),
+            |this: &mut Self, address, event: &InputEvent, cx| match event {
+                InputEvent::Submit(text) => this.navigate_to_input(text.clone(), cx),
                 // Search-mode fields never emit a steer; nothing to do here.
-                ComposerEvent::SubmitSteer(_) => {}
-                ComposerEvent::Edited => {
+                InputEvent::Edited => {
                     // Edits from the page echo itself also land here (events
                     // flush after the update that set the content), so dirty
                     // is derived, not latched: the field is dirty exactly
@@ -1212,8 +1210,8 @@ impl BrowserView {
                     let shown = this.current_url.as_deref().map(display_url).unwrap_or("");
                     this.address_dirty = address.read(cx).content() != shown;
                 }
-                ComposerEvent::Focus => {}
-                ComposerEvent::BackspaceOnEmpty => {}
+                InputEvent::Focus => {}
+                InputEvent::BackspaceOnEmpty => {}
             },
         );
 

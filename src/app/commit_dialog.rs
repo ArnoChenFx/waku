@@ -13,7 +13,7 @@ actions!(
 );
 
 const DIALOG_CONTEXT: &str = "CommitDialog";
-const DIALOG_INPUT_CONTEXT: &str = "CommitDialog > ComposerInput";
+const DIALOG_INPUT_CONTEXT: &str = "CommitDialog > TextInput";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -67,7 +67,7 @@ pub(super) struct CommitDialogState {
     id: Uuid,
     workspace: PathBuf,
     invocation: Option<crate::git_commit::AgentInvocation>,
-    message: Entity<ComposerInput>,
+    message: Entity<TextInput>,
     include_unstaged: bool,
     snapshot: crate::git_commit::Snapshot,
     snapshot_loading: bool,
@@ -150,8 +150,8 @@ impl Waku {
             ..Default::default()
         };
         let message = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .code_editor(None)
+            TextInput::new(window, cx)
+                .multi_line()
                 .placeholder(tr!("commit.message_placeholder"))
         });
         let message_focus = message.read(cx).focus();

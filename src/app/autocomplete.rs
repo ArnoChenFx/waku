@@ -31,7 +31,7 @@ use super::composer::next_picker_highlight;
 use super::*;
 
 /// Key context the composer card declares while the popup is open.
-const AUTOCOMPLETE_CONTEXT: &str = "ComposerAutocomplete > ComposerInput";
+const AUTOCOMPLETE_CONTEXT: &str = "ComposerAutocomplete > TextInput";
 
 /// Bind the popup's keys. Must run after [`crate::input::init`]: `enter` and
 /// the arrows tie with the field's own bindings at the `ComposerInput` depth,
@@ -247,7 +247,7 @@ impl Waku {
     fn composer_trigger(&self, window: &Window, cx: &App) -> Option<Trigger> {
         let input = self.composer.read(cx);
         let trigger = if input.focus().is_focused(window) {
-            composer_complete::detect_trigger(input.content(), input.cursor())
+            composer_complete::detect_trigger(input.content(cx), input.cursor(cx))
         } else {
             None
         };
@@ -357,7 +357,7 @@ impl Waku {
             AutocompleteRow::File(scored) => format!("@{} ", scored.item.path),
         };
         if matches!(row, AutocompleteRow::Command(_)) {
-            let mut submission = self.composer.read(cx).content().to_owned();
+            let mut submission = self.composer.read(cx).content(cx).to_owned();
             submission.replace_range(trigger.range.clone(), &insert);
             if self.execute_local_composer_command(&submission, cx) {
                 return;

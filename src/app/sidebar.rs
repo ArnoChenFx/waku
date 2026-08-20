@@ -6,7 +6,7 @@ use super::*;
 actions!(waku_sidebar, [CancelSessionRename]);
 
 const SESSION_RENAME_PARENT_CONTEXT: &str = "SessionRename";
-const SESSION_RENAME_FIELD_CONTEXT: &str = "SessionRename > ComposerInput";
+const SESSION_RENAME_FIELD_CONTEXT: &str = "SessionRename > TextInput";
 
 /// Keep Escape inside the focused inline editor so it cancels the rename,
 /// rather than falling through to the window-wide Stop action.

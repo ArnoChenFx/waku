@@ -1262,7 +1262,7 @@ impl Waku {
                     .flex()
                     // The filter field keeps focus and the selected row is only
                     // drawn, never focused — the same split Zed's picker uses.
-                    // These arrive as actions bound to `WakuMenu > ComposerInput`,
+                    // These arrive as actions bound to `WakuMenu > TextInput`,
                     // which is the only way to claim a key out from under a
                     // focused text field.
                     .on_action(move |_: &SelectNextEntry, _, cx| {
@@ -2576,7 +2576,7 @@ impl Waku {
             self.escape_stop_confirmation
                 .is_armed_for(EscapeStopTarget::for_session(session), Instant::now())
         });
-        let has_draft = !self.composer.read(cx).content().trim().is_empty()
+        let has_draft = !self.composer.read(cx).content(cx).trim().is_empty()
             || !self.composer_attachments.is_empty();
         // With no provider to run it, a draft has nowhere to go. The button
         // reads as unavailable and the submission path refuses too, so
@@ -2727,7 +2727,7 @@ impl Waku {
                                             .tooltip(Tooltip::text(tr!("composer.queue_followup")))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 let prompt =
-                                                    this.composer.read(cx).content().to_owned();
+                                                    this.composer.read(cx).content(cx).to_owned();
                                                 if let Some(submission) =
                                                     this.submission_with_attachments(&prompt, cx)
                                                 {
@@ -2772,7 +2772,7 @@ impl Waku {
                                     element.tooltip(Tooltip::text(tr!("composer.no_providers")))
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    let prompt = this.composer.read(cx).content().to_owned();
+                                    let prompt = this.composer.read(cx).content(cx).to_owned();
                                     if let Some(submission) =
                                         this.submission_with_attachments(&prompt, cx)
                                     {
@@ -2907,6 +2907,7 @@ impl Waku {
                 let next_actions = actions.clone();
                 let previous_actions = actions.clone();
                 let confirm_actions = actions.clone();
+                let dismiss_weak = weak.clone();
                 let next_weak = weak.clone();
                 let previous_weak = weak.clone();
                 let confirm_weak = weak.clone();
@@ -3175,6 +3176,25 @@ impl Waku {
                         if should_close {
                             confirm_popover.close(window, cx);
                             window.refresh();
+                        }
+                    })
+                    // Escape backs the create form out to browsing. The rest
+                    // of the peel is the fields' own clear-on-escape: a
+                    // non-empty filter (or typed branch name) clears before
+                    // this handler ever sees the keystroke, and an empty
+                    // browse view propagates on to the menu's own dismiss.
+                    .on_action(move |_: &DismissMenu, window, cx| {
+                        let handled = dismiss_weak
+                            .update(cx, |this, cx| {
+                                if this.branch_picker_mode == BranchPickerMode::Create {
+                                    this.cancel_branch_creation(window, cx);
+                                    return true;
+                                }
+                                false
+                            })
+                            .unwrap_or(false);
+                        if !handled {
+                            cx.propagate();
                         }
                     })
                     .child(body)

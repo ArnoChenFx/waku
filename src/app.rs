@@ -27,7 +27,7 @@ use crate::computer_use::{
 };
 use crate::driver::{self, DriverHandle, DriverStartOptions, SessionOptions};
 use crate::git_branch::BranchSnapshot;
-use crate::input::{ComposerAttachmentPaste, ComposerEvent, ComposerInput};
+use crate::input::{ComposerAttachmentPaste, ComposerEvent, ComposerInput, InputEvent, TextInput};
 use crate::md;
 use crate::model::{
     ActivityItem, ActivityKind, AgentSession, BackgroundWorkEvent, BackgroundWorkItem,
@@ -708,7 +708,7 @@ impl Render for WakuPane {
 }
 
 struct RightPanelFileEditor {
-    state: Entity<ComposerInput>,
+    state: Entity<TextInput>,
     disk_content: String,
     writable: bool,
     dirty: bool,
@@ -1044,17 +1044,17 @@ pub struct Waku {
     /// without consulting the environment or account database in a frame.
     home_directory: Option<PathBuf>,
     composer: Entity<ComposerInput>,
-    user_input_answer: Entity<ComposerInput>,
+    user_input_answer: Entity<TextInput>,
     /// Drafts are independent of transcript persistence: started tasks key by
     /// session id, while blank New Task pages key by project id.
     composer_drafts: ComposerDrafts,
     composer_draft_store: ComposerDraftStore,
     composer_draft_save_generation: u64,
     command_palette: command_palette::CommandPaletteUi,
-    model_search: Entity<ComposerInput>,
-    settings_search: Entity<ComposerInput>,
-    daemon_port_input: Entity<ComposerInput>,
-    daemon_origins_input: Entity<ComposerInput>,
+    model_search: Entity<TextInput>,
+    settings_search: Entity<TextInput>,
+    daemon_port_input: Entity<TextInput>,
+    daemon_origins_input: Entity<TextInput>,
     daemon_reconfigure_pending: bool,
     daemon_token_revealed: bool,
     settings_focus: FocusHandle,
@@ -1098,7 +1098,7 @@ pub struct Waku {
     /// The provider row expanded on the Providers page, if any. The binary
     /// override input below edits this provider's entry.
     expanded_provider_settings: Option<ProviderKind>,
-    provider_path_input: Entity<ComposerInput>,
+    provider_path_input: Entity<TextInput>,
     computer_permissions: ComputerPermissions,
     computer_permission_tx: Sender<Result<ComputerPermissions, String>>,
     computer_permission_events: Receiver<Result<ComputerPermissions, String>>,
@@ -1150,7 +1150,7 @@ pub struct Waku {
     usage_months_scroll: ScrollHandle,
     usage_months_scrollbar: Rc<ScrollbarState>,
     /// Filter query over the Usage page's project rows.
-    usage_project_filter: Entity<ComposerInput>,
+    usage_project_filter: Entity<TextInput>,
     /// Virtualized list over the filtered project rows, so only visible rows
     /// build elements no matter how many working directories have usage.
     usage_projects_list: ListState,
@@ -1179,8 +1179,8 @@ pub struct Waku {
     /// normally that is the filter field — which the empty state does not
     /// draw, so its one button holds focus instead.
     model_picker_empty_focus: FocusHandle,
-    branch_search: Entity<ComposerInput>,
-    branch_create_input: Entity<ComposerInput>,
+    branch_search: Entity<TextInput>,
+    branch_create_input: Entity<TextInput>,
     branch_picker_mode: BranchPickerMode,
     /// Keyboard cursor over the branch picker's enabled actions. Disabled
     /// rows remain visible but never enter this index.
@@ -1282,7 +1282,7 @@ pub struct Waku {
     session_rename: Option<Uuid>,
     /// One stable field reused across sidebar rows so virtualization never
     /// replaces the focused editor while a rename is in progress.
-    session_rename_input: Entity<ComposerInput>,
+    session_rename_input: Entity<TextInput>,
     /// Date groups the user has folded in the sidebar. This is intentionally
     /// runtime-only, like transcript disclosure state.
     sidebar_collapsed_groups: HashSet<SessionDateGroup>,
@@ -1308,7 +1308,7 @@ pub struct Waku {
     right_panel_tabs_scroll_handle: ScrollHandle,
     right_panel_files_scroll_handle: ScrollHandle,
     right_panel_files_scrollbar: Rc<ScrollbarState>,
-    right_panel_diff_filter: Entity<ComposerInput>,
+    right_panel_diff_filter: Entity<TextInput>,
     /// Unified diff rows and changed-file tree rows are independently
     /// virtualized. Large generated patches stay proportional to what is on
     /// screen rather than the size of the repository change.
@@ -1369,7 +1369,7 @@ pub struct Waku {
     /// When the current catalog landed, for the reopen-staleness check.
     skills_scanned_at: Option<Instant>,
     /// Filter query over the Skills page's rows.
-    skills_search: Entity<ComposerInput>,
+    skills_search: Entity<TextInput>,
     /// Virtualized list over the filtered skill rows.
     skills_list_state: ListState,
     skills_scrollbar: Rc<ScrollbarState>,
@@ -1879,75 +1879,69 @@ impl Waku {
                 .count(),
         });
 
-        let composer = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(14.0)));
+        let composer = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(14.0), cx));
         let user_input_answer = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
                 .placeholder(tr!("user_input.other_placeholder"))
         });
         let command_palette_search = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
+                .clear_on_escape()
                 .placeholder(tr!("command_palette.placeholder"))
         });
         let model_search = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
+                .clear_on_escape()
                 .placeholder(tr!("input.search_models"))
         });
         let branch_search = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
+                .clear_on_escape()
                 .placeholder(tr!("input.search_branches"))
         });
         let branch_create_input = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
+                .clear_on_escape()
                 .placeholder(tr!("input.new_branch_name"))
         });
         let settings_search = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
+                .clear_on_escape()
                 .placeholder(tr!("settings.search"))
         });
         let daemon_port = state.daemon_exposure.port.to_string();
         let daemon_origins = state.daemon_exposure.allowed_origins_text();
         let daemon_port_input = cx.new(|cx| {
-            let mut input = ComposerInput::new(window, cx)
-                .search_field()
+            let mut input = TextInput::new(window, cx)
                 .select_all_on_focus_click()
                 .placeholder(tr!("daemon.port_placeholder"));
             input.set_content(daemon_port, cx);
             input
         });
         let daemon_origins_input = cx.new(|cx| {
-            let mut input = ComposerInput::new(window, cx)
-                .search_field()
+            let mut input = TextInput::new(window, cx)
                 .select_all_on_focus_click()
                 .placeholder(tr!("daemon.allowed_origins_placeholder"));
             input.set_content(daemon_origins, cx);
             input
         });
         let skills_search = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
+                .clear_on_escape()
                 .placeholder(tr!("skills.search"))
         });
-        let session_rename_input = cx.new(|cx| ComposerInput::new(window, cx).search_field());
+        let session_rename_input = cx.new(|cx| TextInput::new(window, cx));
         let provider_path_input = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
                 .select_all_on_focus_click()
                 .placeholder(tr!("input.detected_automatically"))
         });
         let usage_project_filter = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
                 .placeholder(tr!("input.filter_projects"))
         });
         let right_panel_diff_filter = cx.new(|cx| {
-            ComposerInput::new(window, cx)
-                .search_field()
+            TextInput::new(window, cx)
                 .placeholder(tr!("diff.filter_files"))
         });
         let navigation_rail = cx.new(|_| ConversationNavigationRail::new());
@@ -2331,15 +2325,15 @@ impl Waku {
 
             cx.subscribe(
                 &user_input_answer,
-                |this: &mut Self, input, event: &ComposerEvent, cx| match event {
-                    ComposerEvent::Submit(answer) | ComposerEvent::SubmitSteer(answer) => {
+                |this: &mut Self, input, event: &InputEvent, cx| match event {
+                    InputEvent::Submit(answer) => {
                         this.submit_user_input_custom_answer(answer.clone(), cx);
                     }
-                    ComposerEvent::Edited => {
+                    InputEvent::Edited => {
                         let answer = input.read(cx).content().to_owned();
                         this.update_user_input_custom_answer(answer, cx);
                     }
-                    ComposerEvent::Focus | ComposerEvent::BackspaceOnEmpty => {}
+                    InputEvent::Focus | InputEvent::BackspaceOnEmpty => {}
                 },
             )
             .detach();
@@ -2389,8 +2383,8 @@ impl Waku {
             // state — nothing highlighted, the current model's row in view.
             cx.subscribe(
                 &model_search,
-                |this: &mut Self, search, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |this: &mut Self, search, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         if search.read(cx).content().trim().is_empty() {
                             this.model_picker_highlight = None;
                             this.reveal_selected_picker_model();
@@ -2405,8 +2399,8 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &command_palette_search,
-                |this: &mut Self, search, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |this: &mut Self, search, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         let query = search.read(cx).content().to_owned();
                         this.command_palette_query_edited(&query, cx);
                     }
@@ -2415,8 +2409,8 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &branch_search,
-                |this: &mut Self, search, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited)
+                |this: &mut Self, search, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited)
                         && this.branch_picker_mode == BranchPickerMode::Browse
                     {
                         if search.read(cx).content().trim().is_empty() {
@@ -2432,8 +2426,8 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &branch_create_input,
-                |_: &mut Self, _, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |_: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         cx.notify();
                     }
                 },
@@ -2441,8 +2435,8 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &settings_search,
-                |_: &mut Self, _, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |_: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         cx.notify();
                     }
                 },
@@ -2451,9 +2445,9 @@ impl Waku {
             for input in [&daemon_port_input, &daemon_origins_input] {
                 cx.subscribe(
                     input,
-                    |this: &mut Self, _, event: &ComposerEvent, cx| match event {
-                        ComposerEvent::Submit(_) => this.apply_daemon_exposure_fields(cx),
-                        ComposerEvent::Edited => cx.notify(),
+                    |this: &mut Self, _, event: &InputEvent, cx| match event {
+                        InputEvent::Submit(_) => this.apply_daemon_exposure_fields(cx),
+                        InputEvent::Edited => cx.notify(),
                         _ => {}
                     },
                 )
@@ -2461,8 +2455,8 @@ impl Waku {
             }
             cx.subscribe(
                 &skills_search,
-                |_: &mut Self, _, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |_: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         cx.notify();
                     }
                 },
@@ -2470,17 +2464,17 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &session_rename_input,
-                |this: &mut Self, _, event: &ComposerEvent, cx| match event {
-                    ComposerEvent::Submit(_) => this.commit_session_rename(cx),
-                    ComposerEvent::Edited if this.session_rename.is_some() => cx.notify(),
+                |this: &mut Self, _, event: &InputEvent, cx| match event {
+                    InputEvent::Submit(_) => this.commit_session_rename(cx),
+                    InputEvent::Edited if this.session_rename.is_some() => cx.notify(),
                     _ => {}
                 },
             )
             .detach();
             cx.subscribe(
                 &usage_project_filter,
-                |_: &mut Self, _, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |_: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         cx.notify();
                     }
                 },
@@ -2488,8 +2482,8 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &right_panel_diff_filter,
-                |this: &mut Self, _, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Edited) {
+                |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
                         this.sync_right_panel_diff_tree_rows(cx);
                         cx.notify();
                     }
@@ -2498,8 +2492,8 @@ impl Waku {
             .detach();
             cx.subscribe(
                 &provider_path_input,
-                |this: &mut Self, _, event: &ComposerEvent, cx| {
-                    if matches!(event, ComposerEvent::Submit(_)) {
+                |this: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Submit(_)) {
                         this.apply_provider_path_override(cx);
                     }
                 },

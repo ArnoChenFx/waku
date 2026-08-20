@@ -26,7 +26,7 @@ actions!(
     ]
 );
 
-const SEARCH_CONTEXT: &str = "CommandPalette > ComposerInput";
+const SEARCH_CONTEXT: &str = "CommandPalette > TextInput";
 const MAX_TASK_RESULTS: usize = 12;
 const MESSAGE_SEARCH_LIMIT: usize = 50;
 const MESSAGE_SEARCH_CACHE_CAPACITY: usize = 24;
@@ -56,7 +56,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("pagedown", SelectPageDown, Some(SEARCH_CONTEXT)),
         KeyBinding::new("pageup", SelectPageUp, Some(SEARCH_CONTEXT)),
         KeyBinding::new("enter", Confirm, Some(SEARCH_CONTEXT)),
-        KeyBinding::new("escape", Dismiss, Some(SEARCH_CONTEXT)),
+        // Bound at the palette, not the field: the query field's own
+        // clear-on-escape outranks this (deeper context) while it has text,
+        // and an empty field propagates the keystroke down to it.
+        KeyBinding::new("escape", Dismiss, Some("CommandPalette")),
     ]);
 }
 
@@ -275,7 +278,7 @@ fn command_palette_results_height(results: &[CommandPaletteItem], show_empty_sta
 }
 
 pub(super) struct CommandPaletteUi {
-    search: Entity<ComposerInput>,
+    search: Entity<TextInput>,
     open: bool,
     focus_generation: u64,
     previous_focus: Option<FocusHandle>,
@@ -291,7 +294,7 @@ pub(super) struct CommandPaletteUi {
 }
 
 impl CommandPaletteUi {
-    pub(super) fn new(search: Entity<ComposerInput>) -> Self {
+    pub(super) fn new(search: Entity<TextInput>) -> Self {
         Self {
             search,
             open: false,

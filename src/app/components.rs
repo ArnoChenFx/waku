@@ -590,7 +590,7 @@ pub(super) fn render_message(params: MessageRender, cx: &mut App) -> AnyElement 
                 column = column.child(attachments);
             }
             if let Some(edit_input) = message_edit_input {
-                let can_submit = !edit_input.read(cx).content().trim().is_empty()
+                let can_submit = !edit_input.read(cx).content(cx).trim().is_empty()
                     || !message.attachments.is_empty();
                 let cancel_waku = waku.clone();
                 let submit_waku = waku.clone();

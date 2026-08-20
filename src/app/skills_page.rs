@@ -11,14 +11,12 @@
 
 use std::path::Path;
 
-use gpui::{KeyBinding, actions};
+use gpui::KeyBinding;
 
 use super::composer::next_picker_highlight;
 use crate::skills::{SkillEntry, SkillSource, SkillsCatalog};
 
 use super::*;
-
-actions!(waku_skills, [ClearSkillsSearch]);
 
 /// Key context the left pane declares around its search field.
 const SKILLS_PANE_CONTEXT: &str = "SkillsPane";
@@ -26,7 +24,7 @@ const SKILLS_PANE_CONTEXT: &str = "SkillsPane";
 /// The search field while focused inside the pane. The field holds real focus
 /// while `up`/`down` walk the list selection, the same claim-from-under-it
 /// arrangement the settings sidebar uses.
-const SKILLS_SEARCH_CONTEXT: &str = "SkillsPane > ComposerInput";
+const SKILLS_SEARCH_CONTEXT: &str = "SkillsPane > TextInput";
 
 const SKILLS_LIST_WIDTH: f32 = 264.0;
 
@@ -52,9 +50,6 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("down", SelectNextEntry, Some(SKILLS_SEARCH_CONTEXT)),
         KeyBinding::new("up", SelectPreviousEntry, Some(SKILLS_SEARCH_CONTEXT)),
-        // Two-stage escape: clear the query first, then fall through to
-        // `CancelTurn`, which closes settings.
-        KeyBinding::new("escape", ClearSkillsSearch, Some(SKILLS_SEARCH_CONTEXT)),
     ]);
 }
 
@@ -475,13 +470,6 @@ impl Waku {
             }))
             .on_action(cx.listener(|this, _: &SelectPreviousEntry, _, cx| {
                 this.step_skill_selection("up", cx);
-            }))
-            .on_action(cx.listener(|this, _: &ClearSkillsSearch, _, cx| {
-                if this.skills_search.read(cx).content().is_empty() {
-                    cx.propagate();
-                    return;
-                }
-                this.skills_search.update(cx, |input, cx| input.clear(cx));
             }))
             .w(px(SKILLS_LIST_WIDTH))
             .flex_none()

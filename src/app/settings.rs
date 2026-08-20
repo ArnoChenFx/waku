@@ -1,9 +1,5 @@
-use gpui::actions;
-
 use super::composer::next_picker_highlight;
 use super::*;
-
-actions!(waku_settings, [ClearSearch]);
 
 const SETTINGS_CONTENT_MAX_WIDTH: f32 = 760.0;
 
@@ -19,7 +15,7 @@ const SETTINGS_SIDEBAR_CONTEXT: &str = "SettingsSidebar";
 /// `down` have to be claimed from under it, and only a binding can do that:
 /// they arrive as actions, which consume the keystroke before the field sees
 /// it.
-const SETTINGS_SEARCH_CONTEXT: &str = "SettingsSidebar > ComposerInput";
+const SETTINGS_SEARCH_CONTEXT: &str = "SettingsSidebar > TextInput";
 
 /// The sidebar's rows in display order, each with the keyword haystack the
 /// search field filters against.
@@ -74,10 +70,6 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("down", SelectNextEntry, Some(SETTINGS_SEARCH_CONTEXT)),
         KeyBinding::new("up", SelectPreviousEntry, Some(SETTINGS_SEARCH_CONTEXT)),
-        // Two-stage escape: the first press clears the query, and on an empty
-        // field the handler propagates, so the keystroke falls through to
-        // `CancelTurn`, which closes settings.
-        KeyBinding::new("escape", ClearSearch, Some(SETTINGS_SEARCH_CONTEXT)),
     ]);
 }
 
@@ -181,15 +173,6 @@ impl Waku {
             }))
             .on_action(cx.listener(|this, _: &SelectPreviousEntry, _, cx| {
                 this.cycle_settings_page("up", cx);
-            }))
-            .on_action(cx.listener(|this, _: &ClearSearch, _, cx| {
-                if this.settings_search.read(cx).content().is_empty() {
-                    cx.propagate();
-                    return;
-                }
-                // `clear` emits `Edited`, and the app's subscription turns
-                // that into the notify that re-expands the filtered list.
-                this.settings_search.update(cx, |input, cx| input.clear(cx));
             }))
             .w(px(DEFAULT_SIDEBAR_WIDTH))
             .h_full()
