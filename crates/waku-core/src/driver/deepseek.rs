@@ -1253,7 +1253,7 @@ fn execute_harness_command(
 ) -> anyhow::Result<HarnessCommandExecution> {
     let execution = server.rpc(
         "commands/execute",
-        json!({"args": {"agentId": session_id, "line": line}}),
+        json!({"args": {"agentId": session_id, "line": line, "images": []}}),
     )?;
     if execution.is_null() {
         bail!("unknown or malformed command: {line}");

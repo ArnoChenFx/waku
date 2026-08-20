@@ -205,9 +205,19 @@ fn sdk_agent(
     let binary = binary
         .to_str()
         .ok_or_else(|| anyhow!("the ACP executable path is not valid UTF-8"))?;
+    #[cfg(not(windows))]
     let cwd = cwd
         .to_str()
         .ok_or_else(|| anyhow!("the ACP working directory is not valid UTF-8"))?;
+    #[cfg(windows)]
+    {
+        // The resolved binary is spawned directly (the SDK offers no cwd), so
+        // here the working directory is only sanity-checked for the session
+        // request that follows.
+        let _ = cwd
+            .to_str()
+            .ok_or_else(|| anyhow!("the ACP working directory is not valid UTF-8"))?;
+    }
     let (computer_args, computer_env) =
         super::support::grok_computer_use_launch_configuration(computer_use);
     launch.args.extend(computer_args);
@@ -223,12 +233,21 @@ fn sdk_agent(
     environment.append(&mut launch.env);
     environment.extend(computer_env);
 
-    // `AcpAgentConfig` deliberately contains only argv and environment. macOS
-    // `env -C` supplies the session cwd without a shell, preserving exact
-    // argument boundaries and the SDK's process-group lifecycle management.
-    let mut args = vec!["-C".to_owned(), cwd.to_owned(), binary.to_owned()];
-    args.extend(launch.args);
-    let config = AcpAgentConfig::new("/usr/bin/env")
+    // `AcpAgentConfig` deliberately contains only argv and environment. On
+    // Unix, `env -C` supplies the session cwd without a shell, preserving
+    // exact argument boundaries and the SDK's process-group lifecycle
+    // management. Windows has no such helper, so the resolved binary runs
+    // directly: the SDK offers no cwd of its own, and the session carries
+    // its working directory in `newSession` either way.
+    #[cfg(not(windows))]
+    let (program, args) = {
+        let mut args = vec!["-C".to_owned(), cwd.to_owned(), binary.to_owned()];
+        args.extend(launch.args);
+        ("/usr/bin/env".to_owned(), args)
+    };
+    #[cfg(windows)]
+    let (program, args) = (binary.to_owned(), launch.args);
+    let config = AcpAgentConfig::new(program)
         .args(args)
         .envs(environment);
     Ok(AcpAgent::new(config).with_debug(move |line, direction| {
@@ -484,12 +503,13 @@ async fn run_sdk_connection(
             });
 
             let mut current_model = model;
+            let mut current_reasoning = reasoning_effort.clone();
             apply_model(
                 &connection,
                 provider,
                 &session_id,
                 current_model.as_deref(),
-                reasoning_effort.as_deref(),
+                current_reasoning.as_deref(),
                 &events,
             )
             .await;
@@ -593,14 +613,17 @@ async fn run_sdk_connection(
                         }
                     }
                     CommandMessage::Options(options) => {
-                        if options.model != current_model {
-                            current_model = options.model;
+                        if options.model != current_model
+                            || options.reasoning_effort != current_reasoning
+                        {
+                            current_model = options.model.clone();
+                            current_reasoning = options.reasoning_effort.clone();
                             apply_model(
                                 &connection,
                                 provider,
                                 &session_id,
                                 current_model.as_deref(),
-                                options.reasoning_effort.as_deref(),
+                                current_reasoning.as_deref(),
                                 &events,
                             )
                             .await;
@@ -696,6 +719,21 @@ async fn apply_model(
     let Some(model) = model else {
         return;
     };
+    // Cursor's `auto` is a CLI-side default marker, not a selectable ACP modelId.
+    // Selecting it via `session/set_model` is rejected by the agent.
+    if provider == ProviderKind::Cursor && model == "auto" {
+        if let Some(effort) = reasoning_effort {
+            let _ = connection
+                .send_request(SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    reasoning_effort_config_id(provider),
+                    effort,
+                ))
+                .block_task()
+                .await;
+        }
+        return;
+    }
     let request = match UntypedMessage::new(
         "session/set_model",
         json!({"sessionId": session_id, "modelId": model}),
@@ -710,10 +748,18 @@ async fn apply_model(
         }
     };
     if let Err(error) = connection.send_request(request).block_task().await {
-        let _ = events.send(DriverEvent::Error(tr!(
-            "errors.select_model",
-            error = error
-        )));
+        // Cursor's `session/set_model` can reject a CLI-valid modelId (e.g. `composer-2.5`)
+        // when the agent's current session capabilities or account entitlements differ.
+        // The CLI's `models` list is the source of truth for the picker, so treat this
+        // as non-fatal on Cursor and keep the session usable.
+        if !(provider == ProviderKind::Cursor
+            && error.to_string().contains("Invalid model value"))
+        {
+            let _ = events.send(DriverEvent::Error(tr!(
+                "errors.select_model",
+                error = error
+            )));
+        }
         return;
     }
     if let Some(effort) = reasoning_effort {
@@ -1317,16 +1363,25 @@ fn handle_session_update(
                     .map(str::to_owned);
                 let _ = events.send(DriverEvent::AutoTitleUpdated(title));
             }
+            // Some agents (e.g. Grok) surface the window in the same update
+            // that carries the title. Treat it as a usage signal so the
+            // status bar can fall back to the catalog window before the first
+            // dedicated usage_update arrives.
+            if let Some(window) = extract_context_window(&update) {
+                let _ = events.send(DriverEvent::UsageUpdated {
+                    context_tokens: extract_context_tokens(&update),
+                    context_window: Some(window),
+                });
+            } else if let Some(tokens) = extract_context_tokens(&update) {
+                let _ = events.send(DriverEvent::UsageUpdated {
+                    context_tokens: Some(tokens),
+                    context_window: None,
+                });
+            }
         }
         Some("usage_update") => {
-            let used = update
-                .get("used")
-                .and_then(Value::as_u64)
-                .filter(|used| *used > 0);
-            let window = ["max", "limit", "size", "contextWindow", "context_window"]
-                .into_iter()
-                .find_map(|key| update.get(key).and_then(Value::as_u64))
-                .filter(|window| *window > 0);
+            let used = extract_context_tokens(&update);
+            let window = extract_context_window(&update);
             if used.is_some() || window.is_some() {
                 let _ = events.send(DriverEvent::UsageUpdated {
                     context_tokens: used,
@@ -1335,10 +1390,115 @@ fn handle_session_update(
             }
         }
         // `user_message_chunk` is Waku's own prompt echoed back. Other typed
-        // updates currently have no transcript representation.
-        _ => {}
+        // updates currently have no transcript representation, but they may
+        // still carry usage (Grok has been observed to piggyback window on
+        // tool and thought deltas).
+        _ => {
+            if let Some(window) = extract_context_window(&update) {
+                let _ = events.send(DriverEvent::UsageUpdated {
+                    context_tokens: extract_context_tokens(&update),
+                    context_window: Some(window),
+                });
+            } else if let Some(tokens) = extract_context_tokens(&update) {
+                let _ = events.send(DriverEvent::UsageUpdated {
+                    context_tokens: Some(tokens),
+                    context_window: None,
+                });
+            }
+        }
+    }
+    // Piggybacked usage on any other update (e.g. Grok attaches window/tokens
+    // to agent_message_chunk/tool deltas). Check after the typed match so
+    // dedicated usage_update/session_info_update keep their specific handling
+    // but other deltas still feed the meter.
+    if !matches!(kind, Some("usage_update") | Some("session_info_update")) {
+        if let Some(window) = extract_context_window(&update) {
+            let _ = events.send(DriverEvent::UsageUpdated {
+                context_tokens: extract_context_tokens(&update),
+                context_window: Some(window),
+            });
+        } else if let Some(tokens) = extract_context_tokens(&update) {
+            let _ = events.send(DriverEvent::UsageUpdated {
+                context_tokens: Some(tokens),
+                context_window: None,
+            });
+        }
     }
     Ok(())
+}
+fn extract_context_tokens(update: &Value) -> Option<u64> {
+    // Direct top-level keys Grok and other ACP agents have been observed to use.
+    for key in [
+        "used",
+        "tokens",
+        "totalTokens",
+        "total_tokens",
+        "contextTokens",
+        "context_tokens",
+        "inputTokens",
+        "outputTokens",
+        "currentTokens",
+        "usedTokens",
+        "used_tokens",
+    ] {
+        if let Some(value) = update.get(key).and_then(Value::as_u64).filter(|v| *v > 0) {
+            return Some(value);
+        }
+    }
+    // Nested carriers: `usage` and `contextUsage` objects.
+    for path in [
+        "/usage/used",
+        "/usage/tokens",
+        "/usage/totalTokens",
+        "/usage/total_tokens",
+        "/usage/inputTokens",
+        "/contextUsage/tokens",
+        "/contextUsage/used",
+        "/contextUsage/totalTokens",
+        "/tokens/used",
+        "/tokens/total",
+        "/data/used",
+        "/content/used",
+    ] {
+        if let Some(value) = update.pointer(path).and_then(Value::as_u64).filter(|v| *v > 0) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn extract_context_window(update: &Value) -> Option<u64> {
+    for key in [
+        "max",
+        "limit",
+        "size",
+        "window",
+        "contextWindow",
+        "context_window",
+        "maxTokens",
+        "windowSize",
+        "contextSize",
+        "maxContext",
+        "totalTokensWindow",
+    ] {
+        if let Some(value) = update.get(key).and_then(Value::as_u64).filter(|v| *v > 0) {
+            return Some(value);
+        }
+    }
+    for path in [
+        "/contextUsage/window",
+        "/contextUsage/max",
+        "/usage/window",
+        "/usage/max",
+        "/usage/contextWindow",
+        "/data/contextWindow",
+        "/contextWindow",
+    ] {
+        if let Some(value) = update.pointer(path).and_then(Value::as_u64).filter(|v| *v > 0) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 #[derive(Default)]
@@ -1810,7 +1970,7 @@ mod tests {
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
                 interaction_mode: InteractionMode::Build,
-                model: Some("grok-4.5".into()),
+                model: None,
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
@@ -1830,6 +1990,61 @@ mod tests {
             match event {
                 DriverEvent::Connected {
                     provider_cursor: Some(ProviderResumeCursor::Grok { .. }),
+                } => break,
+                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
+                _ => {}
+            }
+        }
+        driver.prompt("hi".into());
+        let mut finished = None;
+        while let Ok(event) = event_rx.recv_timeout(Duration::from_secs(120)) {
+            match event {
+                DriverEvent::TurnFinished { success, .. } => {
+                    finished = Some(success);
+                    break;
+                }
+                DriverEvent::Error(error) => panic!("the agent reported: {error}"),
+                _ => {}
+            }
+        }
+        assert_eq!(finished, Some(true));
+    }
+
+    /// Drives a real agent through the SDK-backed driver. Ignored by default:
+    /// it needs the CLI installed, credentials, and the network.
+    #[test]
+    #[ignore = "requires an installed, authenticated cursor"]
+    fn cursor_prompt_response_from_the_sdk_finishes_the_turn() {
+        let binary = crate::command_env::find_executable("cursor-agent")
+            .expect("cursor-agent is not installed");
+        let (events, event_rx) = crate::driver::test_event_channel();
+        let driver = AcpDriver::start(
+            ProviderKind::Cursor,
+            DriverStartOptions {
+                binary,
+                cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+                mode: RuntimeMode::FullAccess,
+                interaction_mode: InteractionMode::Build,
+                model: None,
+                reasoning_effort: None,
+                service_tier: None,
+                context_window: None,
+                agent_preset: None,
+                computer_use_enabled: false,
+                provider_cursor: None,
+                extra_args: Vec::new(),
+            },
+            events,
+        )
+        .expect("the ACP session should open");
+
+        loop {
+            let event = event_rx
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the agent should report its session");
+            match event {
+                DriverEvent::Connected {
+                    provider_cursor: Some(ProviderResumeCursor::Cursor { .. }),
                 } => break,
                 DriverEvent::Error(error) => panic!("the agent reported: {error}"),
                 _ => {}

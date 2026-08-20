@@ -57,13 +57,21 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         ],
         ProviderKind::Cursor => {
             vec![ProviderModel::new("auto", tr!("model_option.auto")).default()]
-        }
+        },
         ProviderKind::DeepSeek
         | ProviderKind::Kimi
         | ProviderKind::OpenCode
         | ProviderKind::OhMyPi
         | ProviderKind::Pi => Vec::new(),
-        ProviderKind::Grok => vec![ProviderModel::new("grok-build", "Grok Build").default()],
+        ProviderKind::Grok => {
+            let mut model = ProviderModel::new("grok-build", "Grok Build").default();
+            model.reasoning_efforts =
+                reasoning_options(["minimal", "low", "medium", "high", "xhigh", "max"]);
+            model.default_reasoning_effort = Some("high".to_owned());
+            model.context_windows = vec![ProviderModelOption::new("256k", "256K")];
+            model.default_context_window = Some("256k".to_owned());
+            vec![model]
+        },
     }
 }
 

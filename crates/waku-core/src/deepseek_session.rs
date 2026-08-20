@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -150,6 +150,18 @@ impl DeepSeekServer {
         extra_args: &[String],
         dsh_home: Option<&Path>,
     ) -> anyhow::Result<Self> {
+        // 用户的 profile 补丁可能把 webserver 固定到某个端口（例如
+        // 0.0.0.0:3080）：那样 `--port 0` 会失效，用户终端里已经开着的
+        // `dsh web` 还会与这里的常驻 Host 抢端口（EADDRINUSE），模型目录
+        // 探测随之整体失败。`--patch` 覆盖层在用户层之后应用、优先级最
+        // 高，把 Waku 的 Host 钉回本地环回的临时端口，两个实例得以共存。
+        let patch = waku_host_patch_path();
+        let mut host_args = vec!["--profile".to_owned(), "web".to_owned()];
+        if let Some(patch) = &patch {
+            host_args.push("--patch".to_owned());
+            host_args.push(patch.to_string_lossy().into_owned());
+        }
+        host_args.extend(["--no-open", "--host", "127.0.0.1", "--port", "0"].map(str::to_owned));
         #[cfg(unix)]
         let mut command = {
             let mut command = crate::command_env::command("/bin/sh");
@@ -157,14 +169,14 @@ impl DeepSeekServer {
                 .args(["-c", DSH_GUARDIAN_SCRIPT, "waku-dsh-guardian"])
                 .arg(binary)
                 .args(extra_args)
-                .args(["web", "--host", "127.0.0.1", "--port", "0"]);
+                .args(&host_args);
             command
         };
         #[cfg(not(unix))]
         let mut command = {
             let mut command = crate::command_env::command(binary);
             command.args(extra_args);
-            command.args(["web", "--host", "127.0.0.1", "--port", "0"]);
+            command.args(&host_args);
             command
         };
         command
@@ -421,11 +433,67 @@ fn rpc_result_value(method: &str, response: &Value) -> anyhow::Result<Value> {
 }
 
 fn parse_ready_port(line: &str) -> Option<u16> {
+    let line = strip_ansi(line);
     let url = line.trim().strip_prefix("dsh web: ")?;
-    let url = url::Url::parse(url).ok()?;
-    (url.scheme() == "http" && url.host_str() == Some("127.0.0.1"))
+    let url = url::Url::parse(url.trim()).ok()?;
+    // Host is forced to 127.0.0.1 by the Waku patch, but accept localhost/::1
+    // as well so a missing or ignored patch does not turn into a silent timeout.
+    let host_ok = matches!(url.host_str(), Some("127.0.0.1") | Some("localhost") | Some("::1"));
+    (url.scheme() == "http" && host_ok)
         .then(|| url.port())
         .flatten()
+}
+
+fn strip_ansi(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            for code in chars.by_ref() {
+                if code.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+/// Waku 常驻 Host 的补丁覆盖层：把 webserver 钉在 127.0.0.1 的临时端口。
+/// 内容固定，已存在且一致时直接复用；写不出文件（只读文件系统之类）
+/// 返回 `None`，启动退化为不带覆盖层的参数。
+fn waku_host_patch_path() -> Option<PathBuf> {
+    const PATCH: &str = "- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n";
+    let directory = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("temp"))
+            .unwrap_or_else(|| PathBuf::from("temp"))
+    } else {
+        dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(crate::identity::DATA_DIRECTORY_NAME)
+    };
+    let path = directory.join("dsh-host-patch.yml");
+    let current = std::fs::read(&path).ok().and_then(|bytes| {
+        String::from_utf8(bytes)
+            .ok()
+            .filter(|contents| *contents == PATCH)
+    });
+    if current.is_none() {
+        if std::fs::create_dir_all(&directory).is_err() {
+            return None;
+        }
+        let temporary = path.with_extension("yml.tmp");
+        if std::fs::write(&temporary, PATCH).is_err() || std::fs::rename(&temporary, &path).is_err()
+        {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 fn terminate_child(child: &mut Child, timeout: Duration) {
@@ -691,10 +759,14 @@ mod tests {
             parse_ready_port("dsh web: http://127.0.0.1:59258"),
             Some(59258)
         );
-        assert_eq!(parse_ready_port("dsh web: http://localhost:59258"), None);
+        assert_eq!(
+            parse_ready_port("dsh web: http://localhost:59258"),
+            Some(59258)
+        );
+        assert_eq!(parse_ready_port("dsh web: \u{1b}[32mhttp://127.0.0.1:59258\u{1b}[0m"), Some(59258));
         assert_eq!(parse_ready_port("listening on 59258"), None);
+        assert_eq!(parse_ready_port("dsh web: http://0.0.0.0:59258"), None);
     }
-
     #[test]
     fn event_hub_routes_session_frames_and_broadcasts_stream_errors() {
         let hub = EventHub::default();

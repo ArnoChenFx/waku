@@ -77,8 +77,13 @@ predate an install, also looks in the usual per-user prefixes:
 `%USERPROFILE%\scoop\shims`, and `%LOCALAPPDATA%\Microsoft\WindowsApps`.
 
 Bare names resolve through `PATHEXT`, so the `claude.cmd` shim npm installs is
-found the same way `claude` would be in a shell. Nothing is spawned with a
-console window attached.
+found the same way `claude` would be in a shell, and Waku spawns the resolved
+file by its full path — `CreateProcess` runs `.cmd` and `.bat` through
+`cmd.exe` for it. An extensionless file is only accepted if it is a real
+executable: several installers ship a Unix shell script without an extension
+beside the real shim (the Cursor IDE bundles a `cursor` launcher next to
+`cursor.cmd`), and starting such a script would fail with
+"The system cannot find the specified path."
 
 If a CLI is installed but not detected, set its path explicitly in
 **Settings → Providers**.

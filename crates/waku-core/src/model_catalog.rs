@@ -1,5 +1,7 @@
 //! Provider model and agent-preset discovery.
 
+use std::collections::HashMap;
+use std::fs;
 use std::hash::Hasher;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -72,14 +74,20 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // older CLIs selectable if model discovery is unavailable.
         ProviderKind::Cursor => {
             vec![ProviderModel::new("auto", tr!("model_option.auto")).default()]
-        }
+        },
         // Harness reports its account/configuration-specific catalog from its
         // Host. An invented fallback would make unavailable routes selectable.
         ProviderKind::DeepSeek => Vec::new(),
         ProviderKind::OpenCode => Vec::new(),
         ProviderKind::Grok => {
-            vec![ProviderModel::new("grok-build", "Grok Build").default()]
-        }
+            let mut model = ProviderModel::new("grok-build", "Grok Build").default();
+            model.reasoning_efforts =
+                reasoning_options(["minimal", "low", "medium", "high", "xhigh", "max"]);
+            model.default_reasoning_effort = Some("high".to_owned());
+            model.context_windows = vec![ProviderModelOption::new("256k", "256K")];
+            model.default_context_window = Some("256k".to_owned());
+            vec![model]
+        },
         // Pi, Oh My Pi, and Kimi Code all take their catalog from the user's
         // configured LLM providers. A fabricated fallback would make
         // unavailable models look selectable.
@@ -126,8 +134,8 @@ pub fn discover_catalog(
         ProviderKind::OpenCode => (discover_opencode_models(binary, extra_args), None),
         ProviderKind::Grok => (discover_grok_models(binary, extra_args), None),
         ProviderKind::Kimi => (discover_kimi_models(binary, extra_args), None),
-        ProviderKind::Pi => (discover_pi_models(binary, extra_args, PiDialect::Pi), None),
-        ProviderKind::OhMyPi => (discover_pi_models(binary, extra_args, PiDialect::OhMyPi), None),
+        ProviderKind::Pi => (discover_pi_models(binary, extra_args), None),
+        ProviderKind::OhMyPi => (discover_oh_my_pi_models(binary, extra_args), None),
     };
     let models = if discovered.is_empty() {
         // A failed or empty probe keeps this configuration's last successful
@@ -426,7 +434,6 @@ fn parse_opencode_models(output: &str) -> Vec<ProviderModel> {
         })
         .collect()
 }
-
 fn discover_grok_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
     command.args(extra_args);
@@ -442,7 +449,97 @@ fn discover_grok_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderMod
     parse_grok_models(&combined)
 }
 
+fn grok_config_path() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("GROK_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(home).join("config.toml"));
+    }
+    dirs::home_dir().map(|h| h.join(".grok").join("config.toml"))
+}
+
+struct GrokCustomInfo {
+    name: Option<String>,
+    context_window: Option<u64>,
+    supports_reasoning: bool,
+    default_reasoning: Option<String>,
+}
+
+fn grok_custom_models() -> HashMap<String, GrokCustomInfo> {
+    let Some(path) = grok_config_path() else {
+        return HashMap::new();
+    };
+    let Ok(content) = fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let mut map: HashMap<String, GrokCustomInfo> = HashMap::new();
+    let mut current_id: Option<String> = None;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let inner = &line[1..line.len() - 1];
+            if let Some(id) = inner.strip_prefix("model.") {
+                let id = id.trim().trim_matches('"').trim().to_owned();
+                if !id.is_empty() {
+                    map.entry(id.clone()).or_insert(GrokCustomInfo {
+                        name: None,
+                        context_window: None,
+                        supports_reasoning: true,
+                        default_reasoning: None,
+                    });
+                    current_id = Some(id);
+                } else {
+                    current_id = None;
+                }
+            } else {
+                current_id = None;
+            }
+            continue;
+        }
+        let Some(id) = current_id.as_deref() else {
+            continue;
+        };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let k = k.trim();
+        let v = v.trim().trim_matches('"').trim_matches('\'').trim();
+        if k == "name" {
+            if let Some(entry) = map.get_mut(id) {
+                entry.name = Some(v.to_owned());
+            }
+        } else if k == "context_window" {
+            if let Ok(n) = v.parse::<u64>() {
+                if let Some(entry) = map.get_mut(id) {
+                    entry.context_window = Some(n);
+                }
+            }
+        } else if k == "supports_reasoning_effort" {
+            if let Some(entry) = map.get_mut(id) {
+                entry.supports_reasoning = v.eq_ignore_ascii_case("true");
+            }
+        } else if k == "reasoning_effort" {
+            if let Some(entry) = map.get_mut(id) {
+                entry.default_reasoning = Some(v.to_owned());
+            }
+        }
+    }
+    map
+}
+
+fn format_grok_context(window: u64) -> (String, String) {
+    if window % 1_000_000 == 0 {
+        (format!("{}m", window / 1_000_000), format!("{}M", window / 1_000_000))
+    } else if window % 1000 == 0 {
+        (format!("{}k", window / 1000), format!("{}K", window / 1000))
+    } else {
+        (window.to_string(), window.to_string())
+    }
+}
+
 fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
+    let custom = grok_custom_models();
     let cleaned = strip_ansi(output);
     let default_model = cleaned.lines().find_map(|line| {
         line.trim()
@@ -463,9 +560,6 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
             if !in_models {
                 return None;
             }
-            // The default is starred and the rest are dashed:
-            //   * grok-4.6 (default)
-            //   - grok-4.5
             let entry = line
                 .strip_prefix('*')
                 .or_else(|| line.strip_prefix('-'))?
@@ -474,8 +568,39 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
             if id.is_empty() || id.chars().any(char::is_whitespace) {
                 return None;
             }
-            let mut model = ProviderModel::new(id, display_name_from_slug(id));
+            let info = custom.get(id);
+            let display_name = info
+                .and_then(|c| c.name.clone())
+                .unwrap_or_else(|| display_name_from_slug(id));
+            let mut model = ProviderModel::new(id, display_name);
             model.is_default = default_model.as_deref() == Some(id);
+            let supports_reasoning = info.map(|c| c.supports_reasoning).unwrap_or(true);
+            if supports_reasoning {
+                model.reasoning_efforts =
+                    reasoning_options(["minimal", "low", "medium", "high", "xhigh", "max"]);
+                let default_effort = info
+                    .and_then(|c| c.default_reasoning.clone())
+                    .unwrap_or_else(|| "high".to_owned());
+                let valid = model
+                    .reasoning_efforts
+                    .iter()
+                    .any(|o| o.id == default_effort);
+                model.default_reasoning_effort = Some(if valid {
+                    default_effort
+                } else {
+                    "high".to_owned()
+                });
+            }
+            let context_window = info.and_then(|c| c.context_window);
+            let (context_id, context_label) = if let Some(window) = context_window {
+                format_grok_context(window)
+            } else if id.contains("4.6") || id.contains("4.5") {
+                ("500k".to_owned(), "500K".to_owned())
+            } else {
+                ("256k".to_owned(), "256K".to_owned())
+            };
+            model.context_windows = vec![ProviderModelOption::new(context_id.clone(), context_label)];
+            model.default_context_window = Some(context_id);
             Some(model)
         })
         .collect()
@@ -581,52 +706,33 @@ fn parse_kimi_models(catalog: &Value, default_model: Option<&str>) -> Vec<Provid
         .collect()
 }
 
-/// Pi and Oh My Pi share the RPC catalog commands but not the flags that keep
-/// a probe cheap, nor the shape of a model's thinking metadata.
+/// Pi and Oh My Pi share the thinking-metadata shape but not the probe: Pi
+/// serves its catalog over the RPC mode, while Oh My Pi's full catalog can
+/// overflow the RPC transport's single-frame limit and is probed through its
+/// CLI instead.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PiDialect {
     Pi,
     OhMyPi,
 }
 
-impl PiDialect {
-    fn probe_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Pi => &[
-                "--mode",
-                "rpc",
-                "--no-session",
-                "--no-skills",
-                "--no-prompt-templates",
-                "--no-context-files",
-            ],
-            // Oh My Pi rejects unknown flags outright, and spells context
-            // files `--no-rules`.
-            Self::OhMyPi => &[
-                "--mode",
-                "rpc",
-                "--no-session",
-                "--no-skills",
-                "--no-rules",
-                "--no-extensions",
-            ],
-        }
-    }
-}
+/// Flags that keep Pi's RPC probe cheap.
+const PI_RPC_PROBE_ARGS: [&str; 6] = [
+    "--mode",
+    "rpc",
+    "--no-session",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
+];
 
-fn discover_pi_models(
-    binary: &Path,
-    extra_args: &[String],
-    dialect: PiDialect,
-) -> Vec<ProviderModel> {
+fn discover_pi_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
     let mut command = crate::command_env::command(binary);
     command.args(extra_args);
-    if dialect == PiDialect::Pi {
-        // Oh My Pi has no such opt-out; it gates its update check on a setting.
-        command.env("PI_SKIP_VERSION_CHECK", "1");
-    }
+    // Oh My Pi has no such opt-out; it gates its update check on a setting.
+    command.env("PI_SKIP_VERSION_CHECK", "1");
     let command = command
-        .args(dialect.probe_args())
+        .args(PI_RPC_PROBE_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -663,13 +769,126 @@ fn discover_pi_models(
         } else {
             Value::Null
         };
-        parse_pi_model_response(dialect, &state, &models)
+        parse_pi_model_response(PiDialect::Pi, &state, &models)
     } else {
         Vec::new()
     };
     let _ = child.kill();
     let _ = child.wait();
     result
+}
+
+/// Oh My Pi's full catalog does not fit the RPC transport's single-frame
+/// limit on machines with many configured providers: `get_available_models`
+/// answers in one frame that can exceed it, and the probe dies with "RPC
+/// response exceeded the transport limit". The CLI prints the same catalog
+/// in compact JSON, so Oh My Pi is probed there instead. The default model
+/// and thinking level come from the settings the CLI itself honors.
+fn discover_oh_my_pi_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
+    let Some(catalog) = omp_cli_json(
+        binary,
+        extra_args,
+        &["models", "--json", "--no-extensions"],
+    )
+    .and_then(|output| serde_json::from_str::<Value>(&output).ok())
+    .and_then(|value| value.get("models").and_then(Value::as_array).cloned())
+    else {
+        return Vec::new();
+    };
+    let default_slug = omp_cli_json(
+        binary,
+        extra_args,
+        &["config", "get", "modelRoles", "--json"],
+    )
+    .and_then(|output| serde_json::from_str::<Value>(&output).ok())
+    .and_then(|value| {
+        value
+            .pointer("/value/default")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let default_thinking = omp_cli_json(
+        binary,
+        extra_args,
+        &["config", "get", "defaultThinkingLevel", "--json"],
+    )
+    .and_then(|output| serde_json::from_str::<Value>(&output).ok())
+    .and_then(|value| value.get("value").and_then(Value::as_str).map(str::to_owned));
+
+    catalog
+        .into_iter()
+        .filter_map(|value| {
+            let provider = value.get("provider").and_then(Value::as_str)?;
+            let model_id = value.get("id").and_then(Value::as_str)?;
+            if provider.trim().is_empty() || model_id.trim().is_empty() {
+                return None;
+            }
+            let slug = format!("{provider}/{model_id}");
+            let name = value
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| display_name_from_slug(model_id));
+            // `thinking` enumerates the levels the model actually honors
+            // (`null` or absent for non-reasoning models). Shaped like an
+            // RPC catalog entry so the shared option builder — including
+            // the always-accepted `off` — applies unchanged.
+            let efforts = value
+                .get("thinking")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let shaped = json!({
+                "reasoning": value.get("reasoning"),
+                "thinking": {"efforts": efforts},
+            });
+            let mut model = ProviderModel::new(slug.clone(), name)
+                .sub_provider(display_name_from_slug(provider));
+            model.is_default = default_slug.as_deref() == Some(slug.as_str());
+            model.reasoning_efforts = pi_reasoning_options(PiDialect::OhMyPi, &shaped);
+            if !model.reasoning_efforts.is_empty() {
+                let preferred = model
+                    .is_default
+                    .then_some(default_thinking.as_deref())
+                    .flatten()
+                    .filter(|effort| {
+                        model
+                            .reasoning_efforts
+                            .iter()
+                            .any(|option| option.id == **effort)
+                    })
+                    .or_else(|| {
+                        model
+                            .reasoning_efforts
+                            .iter()
+                            .any(|option| option.id == "medium")
+                            .then_some("medium")
+                    })
+                    .or_else(|| {
+                        model
+                            .reasoning_efforts
+                            .first()
+                            .map(|option| option.id.as_str())
+                    });
+                model.default_reasoning_effort = preferred.map(str::to_owned);
+            }
+            Some(model)
+        })
+        .collect()
+}
+
+/// Run `omp` with `arguments` and return its JSON stdout; a failed or
+/// non-JSON run yields `None` so the caller falls back like any failed probe.
+fn omp_cli_json(binary: &Path, extra_args: &[String], arguments: &[&str]) -> Option<String> {
+    let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
+    let command = command.args(arguments).stderr(Stdio::null());
+    let output = crate::command_env::output(command).ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .into_owned()
+    })
 }
 
 fn parse_pi_model_response(
@@ -1546,7 +1765,7 @@ done
 "#,
         );
 
-        let models = discover_pi_models(&binary, PiDialect::Pi);
+        let models = discover_pi_models(&binary, &[]);
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "extension-provider/extension-model");
@@ -1596,7 +1815,7 @@ done
     #[ignore = "requires an installed, authenticated omp"]
     fn ohmypi_catalog_against_the_real_cli() {
         let binary = crate::command_env::find_executable("omp").expect("omp is not installed");
-        let models = discover_pi_models(&binary, &[], PiDialect::OhMyPi);
+        let models = discover_oh_my_pi_models(&binary, &[]);
         assert!(!models.is_empty(), "Oh My Pi reported no models");
         for model in &models {
             assert!(

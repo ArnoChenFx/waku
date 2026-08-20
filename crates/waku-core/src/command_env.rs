@@ -216,7 +216,7 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
 /// shell would, and `std::process::Command` runs a `.cmd`/`.bat` through
 /// `cmd.exe` for us.
 fn resolve_executable_file(candidate: &Path) -> Option<PathBuf> {
-    if candidate.is_file() {
+    if candidate.is_file() && is_directly_executable(candidate) {
         return Some(candidate.to_path_buf());
     }
     #[cfg(windows)]
@@ -232,6 +232,35 @@ fn resolve_executable_file(candidate: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Whether the process API can start `candidate` without a shell. Everything
+/// with a shebang runs by name on Unix; on Windows `CreateProcess` starts
+/// PE images, with `.bat`/`.cmd` handed to `cmd.exe`. An *extensionless*
+/// file is therefore accepted only as a PE image: several installers drop
+/// shell-launcher scripts without an extension (the Cursor IDE bundles a
+/// `cursor` launcher beside `cursor.cmd`, and tool shims appear as bare
+/// names), and picking one of those passes detection while every spawn of
+/// the provider fails with `os error 3`.
+fn is_directly_executable(candidate: &Path) -> bool {
+    #[cfg(not(windows))]
+    {
+        true
+    }
+    #[cfg(windows)]
+    {
+        candidate.extension().is_some() || is_pe_image(candidate)
+    }
+}
+
+#[cfg(windows)]
+fn is_pe_image(path: &Path) -> bool {
+    const MZ_MAGIC: [u8; 2] = [b'M', b'Z'];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 2];
+    std::io::Read::read_exact(&mut file, &mut magic).is_ok() && magic == MZ_MAGIC
 }
 
 #[cfg(windows)]

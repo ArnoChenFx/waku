@@ -233,14 +233,24 @@ impl Waku {
                 }
             }
         });
-
         let percent = context.and_then(context_percent);
-        let fill = match percent {
+        // Effective window falls back to the catalog when the transport has
+        // not reported one yet. For single-window providers like Grok that is
+        // the model's fixed capacity — it should read as a status value even
+        // before the first turn.
+        let fallback_window = fallback_context_window(session, &self.probes);
+        let effective_window = context.and_then(|usage| usage.window).or(fallback_window);
+        let effective_tokens = context.map(|usage| usage.tokens).unwrap_or(0);
+        let effective_percent = effective_window
+            .filter(|window| *window > 0)
+            .map(|window| effective_tokens as f64 * 100.0 / window as f64);
+        let gauge_percent = percent.or(effective_percent);
+        let fill = match gauge_percent {
             Some(percent) if percent >= 95.0 => theme.danger,
             Some(percent) if percent >= 80.0 => theme.warning,
             _ => theme.gauge,
         };
-        let tooltip = match (&error, percent) {
+        let tooltip = match (&error, gauge_percent) {
             (Some(error), _) => SharedString::from(tr!("usage.refresh_failed", error = error)),
             (None, Some(percent)) => SharedString::from(tr!(
                 "usage.context_used",
@@ -253,10 +263,19 @@ impl Waku {
             )),
         };
 
+        let status_label = match effective_window {
+            Some(window) => Some(SharedString::from(format!(
+                "{} / {}",
+                format_tokens(effective_tokens),
+                format_tokens(window)
+            ))),
+            None => context.map(|usage| SharedString::from(format_tokens(usage.tokens))),
+        };
         let trigger = div()
             .id("usage-meter")
             .h(px(20.0))
             .px(px(5.0))
+            .gap(px(6.0))
             .rounded(px(5.0))
             .flex()
             .items_center()
@@ -265,7 +284,14 @@ impl Waku {
             .hover(|element| element.bg(theme.overlay))
             .when(handle.is_open(), |element| element.bg(theme.overlay_strong))
             .tooltip(Tooltip::text(tooltip))
-            .child(context_gauge(percent, theme.border_strong, fill));
+            .child(context_gauge(gauge_percent, theme.border_strong, fill))
+            .children(status_label.map(|label| {
+                div()
+                    .text_size(px(11.0))
+                    .line_height(px(14.0))
+                    .text_color(theme.text_tertiary)
+                    .child(label)
+            }));
 
         Some(popover(
             trigger,
@@ -291,6 +317,54 @@ fn context_percent(usage: ContextUsage) -> Option<f64> {
         .window
         .filter(|window| *window > 0)
         .map(|window| usage.tokens as f64 * 100.0 / window as f64)
+}
+
+fn fallback_context_window(session: &AgentSession, probes: &[ProviderProbe]) -> Option<u64> {
+    // Prefer the session's explicit window selection (e.g. user picked 1m on
+    // Claude), then the model's catalog entry.
+    if let Some(id) = session.context_window.as_deref() {
+        if let Some(window) = parse_context_window_id(id) {
+            return Some(window);
+        }
+    }
+    let model_id = session.model.as_deref()?;
+    let probe = probes.iter().find(|probe| probe.provider == session.provider)?;
+    // Model may not yet be in the probe if discovery is still pending; try
+    // the default or first entry so Grok's single window still surfaces.
+    let model = probe
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .or_else(|| probe.models.iter().find(|model| model.is_default))
+        .or_else(|| probe.models.first())?;
+    let window_id = model
+        .default_context_window
+        .as_deref()
+        .or_else(|| model.context_windows.first().map(|window| window.id.as_str()))?;
+    parse_context_window_id(window_id)
+}
+
+fn parse_context_window_id(id: &str) -> Option<u64> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Numeric ids like "200000" pass straight through.
+    if let Ok(value) = trimmed.parse::<u64>() {
+        return Some(value);
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(prefix) = lower.strip_suffix('k') {
+        if let Ok(value) = prefix.parse::<f64>() {
+            return Some((value * 1_000.0) as u64);
+        }
+    }
+    if let Some(prefix) = lower.strip_suffix('m') {
+        if let Ok(value) = prefix.parse::<f64>() {
+            return Some((value * 1_000_000.0) as u64);
+        }
+    }
+    None
 }
 
 /// The trigger glyph: a ring whose arc fills clockwise from 12 o'clock as the
