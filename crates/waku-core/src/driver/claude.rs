@@ -655,13 +655,21 @@ const CLAUDE_TASK_OUTPUT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// locate the workspace component instead of reproducing Claude's private cwd
 /// escaping rules.
 fn claude_task_output_path(session_id: &str, task_id: &str) -> Option<PathBuf> {
-    // SAFETY: `geteuid` has no preconditions and does not retain pointers.
-    let uid = unsafe { libc::geteuid() };
-    claude_task_output_path_in(
-        &Path::new("/tmp").join(format!("claude-{uid}")),
-        session_id,
-        task_id,
-    )
+    #[cfg(unix)]
+    {
+        // SAFETY: `geteuid` has no preconditions and does not retain pointers.
+        let uid = unsafe { libc::geteuid() };
+        claude_task_output_path_in(
+            &Path::new("/tmp").join(format!("claude-{uid}")),
+            session_id,
+            task_id,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (session_id, task_id);
+        None
+    }
 }
 
 fn claude_task_output_path_in(root: &Path, session_id: &str, task_id: &str) -> Option<PathBuf> {
