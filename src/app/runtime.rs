@@ -1997,7 +1997,7 @@ impl Waku {
             let _ = waku.update(cx, |waku, cx| {
                 if waku.state.selected_session == Some(session_id) {
                     composer.update(cx, |input, cx| {
-                        if input.content().is_empty() {
+                        if input.content(cx).is_empty() {
                             input.set_content(prompt, cx);
                         }
                     });
@@ -2055,7 +2055,7 @@ impl Waku {
             return;
         };
 
-        let input = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(12.0)));
+        let input = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(12.0), cx));
         input.update(cx, |input, cx| input.set_content(initial_message, cx));
         cx.subscribe(
             &input,
@@ -2117,7 +2117,7 @@ impl Waku {
         let prompt = self
             .message_edit
             .as_ref()
-            .map(|edit| edit.input.read(cx).content().to_owned())
+            .map(|edit| edit.input.read(cx).content(cx).to_owned())
             .unwrap_or_default();
         self.submit_message_edit_prompt(prompt, cx);
     }
@@ -2801,13 +2801,31 @@ impl Waku {
             self.enqueue_follow_up_submission(session.id, submission, cx);
             return;
         }
+        let provider_prompt = self.resolve_skill_submission(session.provider, &submission.prompt);
         if let Some(runtime) = self.runtimes.get_mut(&session.id) {
-            runtime.driver.steer(submission.prompt.clone());
+            runtime.driver.steer(provider_prompt);
             runtime.pending_steers.push_back(submission);
         } else {
             self.enqueue_follow_up_submission(session.id, submission, cx);
         }
         cx.notify();
+    }
+
+    /// Resolve presentation-preserving composer syntax immediately before a
+    /// prompt crosses into a provider transport.
+    fn resolve_provider_submission(&self, provider: ProviderKind, prompt: &str) -> String {
+        crate::composer_complete::resolved_submission(provider, prompt, &self.slash_command_index)
+            .unwrap_or_else(|| prompt.to_owned())
+    }
+
+    /// Resolve only provider-native skill syntax for a live steering message.
+    fn resolve_skill_submission(&self, provider: ProviderKind, prompt: &str) -> String {
+        crate::composer_complete::resolved_skill_submission(
+            provider,
+            prompt,
+            &self.slash_command_index,
+        )
+        .unwrap_or_else(|| prompt.to_owned())
     }
 
     pub(super) fn enqueue_follow_up_submission(
@@ -3212,15 +3230,19 @@ impl Waku {
         if selected && let Some(warning) = checkpoint_warning {
             self.show_toast(warning);
         }
-        // Template commands expand here, at the seam between the transcript
-        // and the transport: the user message keeps the typed `/name …` —
-        // the same echo the CLIs show — while the provider receives the
-        // rendered prompt. Claude's commands pass through untouched; its CLI
-        // owns their expansion.
+        let provider = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.provider)
+            .unwrap_or(self.state.last_provider);
+        // Provider syntax resolves here, at the seam between the transcript
+        // and the transport. The user message keeps the typed slash form,
+        // while templates expand and skills adopt provider-native syntax.
+        // Claude's commands pass through untouched; its CLI owns expansion.
         let prompt = submission.prompt;
-        let driver_prompt =
-            crate::composer_complete::expanded_submission(&prompt, &self.slash_command_index)
-                .unwrap_or(prompt);
+        let driver_prompt = self.resolve_provider_submission(provider, &prompt);
         let mut failed_to_start = false;
         match driver {
             Ok(driver) => driver.prompt(driver_prompt),
