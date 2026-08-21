@@ -73,11 +73,11 @@ export function ModelPicker({
   })
   const rows = (() => {
     const normalized = query.trim().toLowerCase()
-    const providers = normalized ? usable : usable.filter(({ id }) => tab === 'favorites' || id === tab)
+    const providers = usable.filter(({ id }) => tab === 'favorites' || id === tab)
     return providers.flatMap(({ id }) => (probeMap[id]?.models ?? [])
       .filter((model) => {
         const key = `${id}:${model.id}`
-        if (!normalized && tab === 'favorites' && !favorites.includes(key)) return false
+        if (tab === 'favorites' && !favorites.includes(key)) return false
         return !normalized || `${model.name} ${model.id} ${model.sub_provider ?? ''} ${providerMeta(id).name}`.toLowerCase().includes(normalized)
       })
       .map((model) => ({ provider: id, model })))
@@ -155,7 +155,7 @@ export function ModelPicker({
             role="dialog"
           >
           <div className="flex h-full w-[50px] shrink-0 flex-col items-center gap-1 overflow-y-auto border-r bg-background p-[5px]">
-            <ModelTab active={tab === 'favorites' && !query} label={t('models.favorites')} onClick={() => { setTab('favorites'); setQuery(''); setHighlight(null) }}>
+            <ModelTab active={tab === 'favorites'} label={t('models.favorites')} onClick={() => { setTab('favorites'); setHighlight(null) }}>
               <WakuIcon className="size-[17px]" name="star" />
             </ModelTab>
             <div className="my-[3px] h-px w-[34px] shrink-0 bg-border" />
@@ -163,11 +163,11 @@ export function ModelPicker({
               const enabled = usable.some((candidate) => candidate.id === provider.id)
               return (
                 <ModelTab
-                  active={tab === provider.id && !query}
+                  active={tab === provider.id}
                   disabled={!enabled}
                   key={provider.id}
                   label={provider.name}
-                  onClick={() => { setTab(provider.id); setQuery(''); setHighlight(null) }}
+                  onClick={() => { setTab(provider.id); setHighlight(null) }}
                 >
                   <ProviderIcon className="size-[18px]" provider={provider.id} />
                 </ModelTab>
@@ -201,7 +201,7 @@ export function ModelPicker({
                     } else if (event.key === 'Enter') {
                       event.preventDefault()
                       choose(highlight ?? (selectedIndex >= 0 ? selectedIndex : 0))
-                    } else if (event.key === 'Tab' && !query) {
+                    } else if (event.key === 'Tab') {
                       event.preventDefault()
                       const tabs: PickerTab[] = ['favorites', ...usable.map(({ id }) => id)]
                       const current = tabs.indexOf(tab)

@@ -975,7 +975,7 @@ impl Waku {
                     .border_r_1()
                     .border_color(theme.border);
 
-                let favorites_selected = selected_tab == ModelPickerTab::Favorites && !searching;
+                let favorites_selected = selected_tab == ModelPickerTab::Favorites;
                 let favorite_weak = weak.clone();
                 sidebar = sidebar
                     .child(
@@ -1029,7 +1029,7 @@ impl Waku {
                         continue;
                     }
                     let usable = rail_tabs.contains(&ModelPickerTab::Provider(kind));
-                    let selected = selected_tab == ModelPickerTab::Provider(kind) && !searching;
+                    let selected = selected_tab == ModelPickerTab::Provider(kind);
                     let tab_weak = weak.clone();
                     sidebar = sidebar.child(
                         div()
@@ -3810,7 +3810,7 @@ pub(super) fn visible_picker_models(
         // them, but offer nothing to new work — including favorites.
         .filter(|(kind, _)| !disabled_providers.contains(kind) || locked_provider == Some(*kind))
         .filter(|(kind, model)| {
-            if searching {
+            let matches_query = if searching {
                 let searchable = format!(
                     "{} {} {} {}",
                     model.name,
@@ -3819,9 +3819,14 @@ pub(super) fn visible_picker_models(
                     model.sub_provider.as_deref().unwrap_or("")
                 )
                 .to_ascii_lowercase();
-                return normalized_query
+                normalized_query
                     .split_whitespace()
-                    .all(|token| searchable.contains(token));
+                    .all(|token| searchable.contains(token))
+            } else {
+                true
+            };
+            if !matches_query {
+                return false;
             }
             match selected_tab {
                 ModelPickerTab::Favorites => favorites
