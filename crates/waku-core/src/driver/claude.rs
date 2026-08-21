@@ -14,8 +14,11 @@
 //! from `claude --help`.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -654,6 +657,7 @@ const CLAUDE_TASK_OUTPUT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// writes it under `/tmp/claude-<uid>/<workspace>/<session>/tasks/<id>.output`;
 /// locate the workspace component instead of reproducing Claude's private cwd
 /// escaping rules.
+#[cfg(unix)]
 fn claude_task_output_path(session_id: &str, task_id: &str) -> Option<PathBuf> {
     #[cfg(unix)]
     {
@@ -717,6 +721,7 @@ fn drain_utf8_output(bytes: &mut Vec<u8>, final_read: bool) -> Option<String> {
     }
 }
 
+#[cfg(unix)]
 fn stream_claude_task_output(
     path: PathBuf,
     key: BackgroundWorkKey,
@@ -757,6 +762,7 @@ fn stream_claude_task_output(
     }
 }
 
+#[cfg(unix)]
 fn stream_claude_task_output_when_ready(
     session_id: String,
     task_id: String,
@@ -779,6 +785,7 @@ fn stream_claude_task_output_when_ready(
     }
 }
 
+#[cfg(unix)]
 fn start_claude_task_output_tail(
     session_id: &str,
     item: &BackgroundWorkItem,
@@ -814,6 +821,15 @@ fn start_claude_task_output_tail(
     if spawned.is_ok() {
         state.task_output_tails.0.insert(task_id, stop);
     }
+}
+
+#[cfg(not(unix))]
+fn start_claude_task_output_tail(
+    _session_id: &str,
+    _item: &BackgroundWorkItem,
+    _events: &DriverEventSender,
+    _state: &mut ClaudeStreamState,
+) {
 }
 
 /// The context window of the model that served this turn, from the result
