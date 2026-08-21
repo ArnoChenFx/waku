@@ -16,6 +16,17 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [0.1.12]
+
+- Invoke Codex, Pi, and Oh My Pi skills with their native syntax
+- Stream live output from Claude background tasks
+- Steer the oldest queued follow-up with Command/Ctrl+Enter in an empty composer
+- Fix model and reasoning option selection for Cursor
+- Fix npm-installed provider detection on Windows
+- Fix daemon terminal sessions hanging during shutdown
+- Exclude copied history from forked Codex sessions from usage totals
+- Keep separate Codex reasoning sections on separate lines
+
 ## [0.1.11]
 
 - Highlight Markdown in the file editor, and toggle between source and a rendered preview
