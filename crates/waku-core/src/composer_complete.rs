@@ -308,6 +308,30 @@ pub fn discover_slash_commands(provider: ProviderKind, project_root: &Path) -> V
                 scan_skill_files(provider, &home.join(".cursor/skills"), &mut commands);
             }
         }
+        ProviderKind::Fx => {
+            // Fx discovers plain `skills/` plus compatibility roots from the
+            // workspace, and keeps managed installs under ~/.fx/skills.
+            for suffix in [
+                "skills",
+                ".opencode/skills",
+                ".codex/skills",
+                ".claude/skills",
+                ".claw/skills",
+            ] {
+                scan_skill_files(provider, &project_root.join(suffix), &mut commands);
+            }
+            if let Some(home) = home.as_deref() {
+                scan_skill_files(provider, &home.join(".fx/skills"), &mut commands);
+                scan_skill_files(
+                    provider,
+                    &home.join(".config/opencode/skills"),
+                    &mut commands,
+                );
+                scan_skill_files(provider, &home.join(".codex/skills"), &mut commands);
+                scan_skill_files(provider, &home.join(".claude/skills"), &mut commands);
+                scan_skill_files(provider, &home.join(".claw/skills"), &mut commands);
+            }
+        }
         ProviderKind::Pi => {
             scan_command_files(
                 &project_root.join(".pi/prompts"),
@@ -708,7 +732,7 @@ pub fn resolved_skill_submission(
 ) -> Option<String> {
     if !matches!(
         provider,
-        ProviderKind::Codex | ProviderKind::Pi | ProviderKind::OhMyPi
+        ProviderKind::Codex | ProviderKind::Fx | ProviderKind::Pi | ProviderKind::OhMyPi
     ) {
         return None;
     }
@@ -724,7 +748,7 @@ pub fn resolved_skill_submission(
         return None;
     }
     Some(match provider {
-        ProviderKind::Codex => format!("${invocation}"),
+        ProviderKind::Codex | ProviderKind::Fx => format!("${invocation}"),
         ProviderKind::Pi | ProviderKind::OhMyPi => format!("/skill:{invocation}"),
         _ => unreachable!("non-native skill providers returned above"),
     })
@@ -1405,11 +1429,16 @@ mod tests {
             .as_deref(),
             Some("/skill:deploy-runbook staging")
         );
+        assert_eq!(
+            resolved_submission(ProviderKind::Fx, "/deploy-runbook staging", &commands).as_deref(),
+            Some("$deploy-runbook staging")
+        );
 
         // Each ecosystem's own project-level skill tree is read too.
         for (provider, dir) in [
             (ProviderKind::Codex, ".codex/skills"),
             (ProviderKind::Cursor, ".cursor/skills"),
+            (ProviderKind::Fx, "skills"),
             (ProviderKind::OpenCode, ".opencode/skills"),
             (ProviderKind::Pi, ".pi/skills"),
             (ProviderKind::OhMyPi, ".omp/skills"),

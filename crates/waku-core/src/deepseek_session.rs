@@ -161,7 +161,12 @@ impl DeepSeekServer {
             host_args.push("--patch".to_owned());
             host_args.push(patch.to_string_lossy().into_owned());
         }
-        host_args.extend(["--no-open", "--host", "127.0.0.1", "--port", "0"].map(str::to_owned));
+        host_args.extend(["--host", "127.0.0.1", "--port", "0"].map(str::to_owned));
+        // Harness 0.1.1-rc.2 不再接受 `--no-open`：按 help 输出探测能力，
+        // 旧版直接省略该参数，避免整个启动因未知旗标而失败。
+        if web_supports_no_open(binary, dsh_home) {
+            host_args.push("--no-open".to_owned());
+        }
         #[cfg(unix)]
         let mut command = {
             let mut command = crate::command_env::command("/bin/sh");
@@ -496,6 +501,23 @@ fn waku_host_patch_path() -> Option<PathBuf> {
     Some(path)
 }
 
+fn web_supports_no_open(binary: &Path, dsh_home: Option<&Path>) -> bool {
+    let mut command = crate::command_env::command(binary);
+    command.args(["web", "--help"]);
+    if let Some(dsh_home) = dsh_home {
+        command.env("DSH_HOME", dsh_home);
+    }
+    crate::command_env::output(&mut command)
+        .ok()
+        .is_some_and(|output| web_help_supports_no_open(&output.stdout))
+}
+
+fn web_help_supports_no_open(output: &[u8]) -> bool {
+    String::from_utf8_lossy(output)
+        .lines()
+        .any(|line| line.contains("--no-open"))
+}
+
 fn terminate_child(child: &mut Child, timeout: Duration) {
     if child.try_wait().is_ok_and(|status| status.is_some()) {
         return;
@@ -768,6 +790,16 @@ mod tests {
         assert_eq!(parse_ready_port("dsh web: http://0.0.0.0:59258"), None);
     }
     #[test]
+    fn web_no_open_flag_is_capability_gated() {
+        assert!(web_help_supports_no_open(
+            b"  --no-open  do not open the Web UI in the default browser\n"
+        ));
+        assert!(!web_help_supports_no_open(
+            b"  --port <port>  listen port\n"
+        ));
+    }
+
+    #[test]
     fn event_hub_routes_session_frames_and_broadcasts_stream_errors() {
         let hub = EventHub::default();
         let first = hub.subscribe("one");
@@ -871,7 +903,7 @@ mod tests {
                 let response = server
                     .rpc(
                         "commands/execute",
-                        json!({"args": {"agentId": session_id, "line": command}}),
+                        json!({"args": {"agentId": session_id, "line": command, "images": []}}),
                     )
                     .expect("native configuration command should succeed");
                 assert_eq!(

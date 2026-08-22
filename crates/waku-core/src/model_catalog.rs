@@ -78,6 +78,10 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // Harness reports its account/configuration-specific catalog from its
         // Host. An invented fallback would make unavailable routes selectable.
         ProviderKind::DeepSeek => Vec::new(),
+        // Fx resolves its catalog through the user's active Gateway or
+        // subscription login. An invented fallback could expose an unusable
+        // route, so discovery is authoritative.
+        ProviderKind::Fx => Vec::new(),
         ProviderKind::OpenCode => Vec::new(),
         ProviderKind::Grok => {
             let mut model = ProviderModel::new("grok-build", "Grok Build").default();
@@ -131,9 +135,12 @@ pub fn discover_catalog(
         ProviderKind::Claude => (Vec::new(), None),
         ProviderKind::Cursor => (discover_cursor_models(binary, extra_args), None),
         ProviderKind::DeepSeek => discover_deepseek_catalog(binary, extra_args),
+        ProviderKind::Fx => (discover_fx_models(binary, extra_args), None),
         ProviderKind::OpenCode => (discover_opencode_models(binary, extra_args), None),
         ProviderKind::Grok => (discover_grok_models(binary, extra_args), None),
         ProviderKind::Kimi => (discover_kimi_models(binary, extra_args), None),
+        // Oh My Pi 走独立的 CLI JSON 探测（RPC 响应会超出传输上限），
+        // 因此不并入 main 统一的 dialect 化 RPC 探测。
         ProviderKind::Pi => (discover_pi_models(binary, extra_args), None),
         ProviderKind::OhMyPi => (discover_oh_my_pi_models(binary, extra_args), None),
     };
@@ -411,6 +418,56 @@ fn parse_deepseek_model_catalog(catalog: &Value) -> Vec<ProviderModel> {
                         Some(model)
                     })
                 })
+        })
+        .collect()
+}
+
+fn discover_fx_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
+    let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
+    let command = command.args(["models", "--json"]);
+    let Ok(output) = crate::command_env::output(command) else {
+        return Vec::new();
+    };
+    let Ok(catalog) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return Vec::new();
+    };
+    parse_fx_models(&catalog, discover_fx_default_model(binary, extra_args).as_deref())
+}
+
+fn discover_fx_default_model(binary: &Path, extra_args: &[String]) -> Option<String> {
+    let mut command = crate::command_env::command(binary);
+    command.args(extra_args);
+    let command = command.args(["status", "--json"]);
+    let output = crate::command_env::output(command).ok()?;
+    let status = serde_json::from_slice::<Value>(&output.stdout).ok()?;
+    status
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+}
+
+fn parse_fx_models(catalog: &Value, default_model: Option<&str>) -> Vec<ProviderModel> {
+    catalog
+        .get("ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| {
+            let (provider, model_id) = id
+                .split_once('/')
+                .map_or((None, id), |(provider, model)| (Some(provider), model));
+            let mut model = ProviderModel::new(id, display_name_from_slug(model_id));
+            if let Some(provider) = provider.filter(|provider| !provider.is_empty()) {
+                model = model.sub_provider(display_name_from_slug(provider));
+            }
+            model.is_default = default_model == Some(id);
+            model
         })
         .collect()
 }
@@ -1455,6 +1512,38 @@ mod tests {
         assert_eq!(models[1].id, "github-copilot/gpt-5.4");
         assert_eq!(models[1].name, "GPT-5.4");
         assert_eq!(models[1].sub_provider.as_deref(), Some("Github Copilot"));
+    }
+
+    #[test]
+    fn parses_fx_json_catalog_and_current_default() {
+        let models = parse_fx_models(
+            &json!({
+                "kind": "models",
+                "count": 3,
+                "ids": [
+                    "anthropic/claude-sonnet-5",
+                    "openai/gpt-5.6-sol",
+                    "custom-model"
+                ]
+            }),
+            Some("openai/gpt-5.6-sol"),
+        );
+
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].name, "Claude Sonnet 5");
+        assert_eq!(models[0].sub_provider.as_deref(), Some("Anthropic"));
+        assert!(models[1].is_default);
+        assert_eq!(models[2].name, "Custom Model");
+        assert_eq!(models[2].sub_provider, None);
+    }
+
+    #[test]
+    #[ignore = "requires an installed and configured Fx"]
+    fn installed_fx_reports_models() {
+        let binary = crate::command_env::find_executable("fx").expect("Fx is not installed");
+        let models = discover_catalog(ProviderKind::Fx, &binary, &[]).0;
+        assert!(!models.is_empty(), "the installed Fx reported no models");
+        assert!(models.iter().any(|model| model.is_default));
     }
 
     #[test]

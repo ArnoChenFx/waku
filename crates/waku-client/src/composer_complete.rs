@@ -190,7 +190,7 @@ pub fn resolved_skill_submission(
 ) -> Option<String> {
     if !matches!(
         provider,
-        ProviderKind::Codex | ProviderKind::Pi | ProviderKind::OhMyPi
+        ProviderKind::Codex | ProviderKind::Fx | ProviderKind::Pi | ProviderKind::OhMyPi
     ) {
         return None;
     }
@@ -205,7 +205,7 @@ pub fn resolved_skill_submission(
         return None;
     }
     Some(match provider {
-        ProviderKind::Codex => format!("${invocation}"),
+        ProviderKind::Codex | ProviderKind::Fx => format!("${invocation}"),
         ProviderKind::Pi | ProviderKind::OhMyPi => format!("/skill:{invocation}"),
         _ => unreachable!("non-native skill providers returned above"),
     })
@@ -413,6 +413,20 @@ mod tests {
                 std::slice::from_ref(&skill)
             ),
             None
+        );
+    }
+
+    #[test]
+    fn fx_skill_submission_uses_the_catalog_invocation() {
+        let skill = command("deploy", CommandScope::Skill);
+        assert_eq!(
+            resolved_submission(
+                ProviderKind::Fx,
+                "/deploy production",
+                std::slice::from_ref(&skill)
+            )
+            .as_deref(),
+            Some("$deploy production")
         );
     }
 
