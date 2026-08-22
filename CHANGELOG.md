@@ -16,7 +16,11 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
-- Add Fx support, including AI Gateway model routing and clean transcript output
+## [0.1.13]
+
+- Add Vercel Fx support
+- Support DeepSeek Harness 0.1.1 without opening its web UI
+- Collapse earlier activity groups when a running turn moves on to newer transcript output
 
 ## [0.1.12]
 
