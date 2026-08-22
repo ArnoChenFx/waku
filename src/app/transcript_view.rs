@@ -1763,19 +1763,30 @@ impl Waku {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let live_turn = self
-            .selected_session()
-            .and_then(AgentSession::active_turn_id)
-            .is_some_and(|turn_id| {
-                self.selected_transcript_blocks()
-                    .get(block_index)
-                    .is_some_and(|block| block.turn_id == Some(turn_id))
-            });
+        // A completed child is not a group boundary: providers commonly emit
+        // the next tool after the previous result. The group leaves the live
+        // tail only when answer text is appended (so `after_message` falls
+        // behind) or when the turn itself settles.
+        let live_group = self.selected_session().is_some_and(|session| {
+            session
+                .transcript_blocks
+                .get(block_index)
+                .is_some_and(|block| {
+                    activity_group_is_live(
+                        session
+                            .active_turn_id()
+                            .is_some_and(|turn_id| block.turn_id == Some(turn_id)),
+                        block_index + 1 == session.transcript_blocks.len(),
+                        block.after_message,
+                        session.messages.len(),
+                    )
+                })
+        });
         let expanded = self
             .activities_expanded
             .get(&block_index)
             .copied()
-            .unwrap_or(live_turn);
+            .unwrap_or(live_group);
         let live_reasoning_id = (self
             .selected_runtime()
             .is_some_and(|runtime| runtime.stream_phase == Some(StreamPhase::Reasoning))
@@ -1791,7 +1802,7 @@ impl Waku {
                 .map(|activity| activity.id)
         })
         .flatten();
-        let header_title = activity_header_title(activities, live_turn, live_reasoning_id);
+        let header_title = activity_header_title(activities, live_group, live_reasoning_id);
         let header_focus =
             self.transcript_control_focus(format!("activity-toggle-{block_index}"), cx);
         let cluster = div()
