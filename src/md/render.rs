@@ -72,20 +72,20 @@ pub struct Metrics {
 impl Metrics {
     /// Assistant response scale, matching the transcript's body text.
     pub const BODY: Self = Self {
-        text_size: 13.5,
+        text_size: 14.0,
         line_height: 21.0,
-        code_text_size: 11.5,
-        code_line_height: 17.5,
+        code_text_size: 13.0,
+        code_line_height: 19.5,
         block_gap: 10.0,
     };
 
     /// User-message scale. Markdown blocks keep the bubble's established body
     /// geometry instead of making every existing plain prompt subtly reflow.
     pub const USER_MESSAGE: Self = Self {
-        text_size: 14.0,
-        line_height: 20.0,
-        code_text_size: 11.5,
-        code_line_height: 17.5,
+        text_size: 14.5,
+        line_height: 21.0,
+        code_text_size: 13.0,
+        code_line_height: 19.5,
         block_gap: 10.0,
     };
 
@@ -93,10 +93,10 @@ impl Metrics {
     /// One notch under [`Metrics::BODY`], not a miniature: secondary reading
     /// text stays close to prose size and leans on color for its hierarchy.
     pub const COMPACT: Self = Self {
-        text_size: 13.0,
+        text_size: 13.5,
         line_height: 19.5,
-        code_text_size: 12.0,
-        code_line_height: 18.0,
+        code_text_size: 13.0,
+        code_line_height: 19.5,
         block_gap: 7.0,
     };
 
@@ -1270,7 +1270,7 @@ fn render_image(url: &str, alt: &str, ctx: &Ctx) -> AnyElement {
         .when(!alt.trim().is_empty(), |element| {
             element.child(
                 div()
-                    .text_size(px(ctx.metrics.text_size - 2.0))
+                    .text_size(px((ctx.metrics.text_size - 2.0).max(12.5)))
                     .line_height(px(ctx.metrics.line_height - 4.0))
                     .text_color(ctx.palette.ghost)
                     .child(SharedString::from(alt.to_owned())),
@@ -1432,7 +1432,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &Ctx) -> AnyElemen
                         .min_w_0()
                         .flex_1()
                         .truncate()
-                        .text_size(px(10.0))
+                        .text_size(px(12.5))
                         .line_height(px(14.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(ctx.palette.ghost)
@@ -1583,7 +1583,7 @@ fn table_row(
                 .min_w_0()
                 .px(px(9.0))
                 .py(px(6.0))
-                .text_size(px(ctx.metrics.text_size - 0.5))
+                .text_size(px((ctx.metrics.text_size - 0.5).max(12.5)))
                 .line_height(px(ctx.metrics.line_height - 2.0))
                 .map(|element| match alignment {
                     TableAlign::Left => element,

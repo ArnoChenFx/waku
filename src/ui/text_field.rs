@@ -76,7 +76,7 @@ impl RenderOnce for TextField {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(sp(11.5))
+            .text_size(sp(12.5))
             .line_height(sp(16.0))
             .when_some(self.icon, |element, (path, size)| {
                 element.child(icon(path, size, theme.text_tertiary))
