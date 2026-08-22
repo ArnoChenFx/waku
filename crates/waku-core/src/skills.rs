@@ -80,6 +80,10 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
         home_join(".cursor/skills"),
     );
     push(
+        SkillSource::Provider(ProviderKind::Fx),
+        home_join(".fx/skills"),
+    );
+    push(
         SkillSource::Provider(ProviderKind::Pi),
         home_join(".pi/agent/skills"),
     );
@@ -111,6 +115,7 @@ pub fn project_skill_locations(project_root: &Path, project_name: &str) -> Vec<S
             SkillSource::Provider(ProviderKind::Cursor),
             ".cursor/skills",
         ),
+        (SkillSource::Provider(ProviderKind::Fx), "skills"),
         (SkillSource::Provider(ProviderKind::Pi), ".pi/skills"),
         (SkillSource::Provider(ProviderKind::OhMyPi), ".omp/skills"),
     ]

@@ -56,6 +56,7 @@ enum CommandMessage {
 
 pub struct AcpDriver {
     commands: smol::channel::Sender<CommandMessage>,
+    supports_steer: bool,
     mode: RuntimeMode,
     interaction_mode: InteractionMode,
     computer_use: Option<super::support::HeadlessComputerUseRuntime>,
@@ -76,6 +77,10 @@ fn launch_for(provider: ProviderKind) -> anyhow::Result<AcpLaunch> {
         ProviderKind::Grok => Ok(AcpLaunch {
             args: vec!["agent".into(), "stdio".into()],
             env: vec![("GROK_OAUTH2_REFERRER".into(), "waku".into())],
+        }),
+        ProviderKind::Fx => Ok(AcpLaunch {
+            args: vec!["acp".into()],
+            env: Vec::new(),
         }),
         ProviderKind::Kimi => Ok(AcpLaunch {
             args: vec!["acp".into()],
@@ -186,6 +191,7 @@ impl AcpDriver {
 
         Ok(Self {
             commands,
+            supports_steer: provider != ProviderKind::Fx,
             mode,
             interaction_mode,
             computer_use,
@@ -340,7 +346,12 @@ async fn run_sdk_connection(
                 let stream_state = stream_state.clone();
                 async move |notification: SessionNotification, _connection| {
                     if !suppress_session_updates.load(Ordering::Acquire) {
-                        handle_session_update(notification, &events, &mut stream_state.lock())?;
+                        handle_session_update(
+                            provider,
+                            notification,
+                            &events,
+                            &mut stream_state.lock(),
+                        )?;
                     }
                     Ok(())
                 }
@@ -473,7 +484,7 @@ async fn run_sdk_connection(
             )
             .await?;
 
-            if let Some(mode_id) = desired_mode(modes.as_ref(), mode, interaction_mode) {
+            if let Some(mode_id) = desired_mode(provider, modes.as_ref(), mode, interaction_mode) {
                 // Mode selection is opportunistic: an agent can advertise a
                 // mode but reject a later transition without invalidating the
                 // session itself.
@@ -679,21 +690,31 @@ async fn establish_session(
 }
 
 fn desired_mode(
+    provider: ProviderKind,
     modes: Option<&SessionModeState>,
     mode: RuntimeMode,
     interaction_mode: InteractionMode,
 ) -> Option<SessionModeId> {
-    if interaction_mode != InteractionMode::Plan && mode != RuntimeMode::Plan {
-        return None;
-    }
     let modes = modes?;
-    let plan = modes
+    let desired = if provider == ProviderKind::Fx {
+        if mode == RuntimeMode::Ask {
+            "ask"
+        } else {
+            "code"
+        }
+    } else {
+        if interaction_mode != InteractionMode::Plan && mode != RuntimeMode::Plan {
+            return None;
+        }
+        "plan"
+    };
+    let desired = modes
         .available_modes
         .iter()
-        .find(|mode| mode.id.to_string().eq_ignore_ascii_case("plan"))?
+        .find(|mode| mode.id.to_string().eq_ignore_ascii_case(desired))?
         .id
         .clone();
-    (modes.current_mode_id != plan).then_some(plan)
+    (modes.current_mode_id != desired).then_some(desired)
 }
 
 /// Which session config option carries reasoning effort. ACP leaves the id to
@@ -901,6 +922,37 @@ fn find_config_option(
         .find(|option| option.category.as_ref() == Some(&category))
 }
 
+fn fx_model_option(config_options: &[SessionConfigOption]) -> Option<&SessionConfigOption> {
+    config_options.iter().find(|option| {
+        option.category == Some(SessionConfigOptionCategory::Model)
+            && option.id.to_string().eq_ignore_ascii_case("model")
+    })
+}
+
+fn fx_model_provider_switch<'a>(
+    config_options: &'a [SessionConfigOption],
+    model: &str,
+) -> Option<(&'a SessionConfigOption, &'static str)> {
+    if fx_model_option(config_options)
+        .is_some_and(|option| session_config_select_values(option).contains(&model))
+    {
+        return None;
+    }
+    // Fx scopes model options to the selected account route. AI Gateway IDs
+    // are provider/model pairs, while subscription IDs are flat. Selecting the
+    // Gateway route returns a refreshed model option that contains these IDs.
+    if !model.contains('/') {
+        return None;
+    }
+    let provider = config_options.iter().find(|option| {
+        option.category == Some(SessionConfigOptionCategory::Model)
+            && option.id.to_string().eq_ignore_ascii_case("provider")
+    })?;
+    (session_config_current_value(provider) != Some("gateway")
+        && session_config_select_values(provider).contains(&"gateway"))
+    .then_some((provider, "gateway"))
+}
+
 async fn apply_model(
     connection: &ConnectionTo<Agent>,
     provider: ProviderKind,
@@ -955,8 +1007,63 @@ async fn apply_model(
         return;
     }
 
+    if provider == ProviderKind::Fx {
+        let mut options = config_options.unwrap_or_default().to_vec();
+        if let Some((provider_option, value)) = fx_model_provider_switch(&options, model) {
+            let config_id = provider_option.id.clone();
+            match connection
+                .send_request(SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    config_id,
+                    value,
+                ))
+                .block_task()
+                .await
+            {
+                Ok(response) => options = response.config_options,
+                Err(error) => {
+                    let _ = events.send(DriverEvent::Error(tr!(
+                        "errors.select_model",
+                        error = error
+                    )));
+                    return;
+                }
+            }
+        }
+        let Some(option) = fx_model_option(&options) else {
+            let _ = events.send(DriverEvent::Error(tr!(
+                "errors.select_model",
+                error = "Fx did not advertise its model configuration"
+            )));
+            return;
+        };
+        if !session_config_select_values(option).contains(&model) {
+            let _ = events.send(DriverEvent::Error(tr!(
+                "errors.select_model",
+                error = format!("Fx did not advertise model {model}")
+            )));
+            return;
+        }
+        if let Err(error) = connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                option.id.clone(),
+                model,
+            ))
+            .block_task()
+            .await
+        {
+            let _ = events.send(DriverEvent::Error(tr!(
+                "errors.select_model",
+                error = error
+            )));
+        }
+        return;
+    }
+
     // Grok, Kimi, OpenCode, and Cursor agents that do not advertise a model
-    // config option retain the legacy request unchanged.
+    // config option retain the legacy request unchanged. Fx intentionally
+    // stays on session/set_config_option, its documented model API.
     let request = match UntypedMessage::new(
         "session/set_model",
         json!({"sessionId": session_id, "modelId": model}),
@@ -1499,12 +1606,23 @@ fn handle_permission_request(
 }
 
 fn handle_session_update(
+    provider: ProviderKind,
     notification: SessionNotification,
     events: &impl DriverEventSink,
     state: &mut AcpStreamState,
 ) -> agent_client_protocol::Result<()> {
     let update = serde_json::to_value(notification.update)?;
     let kind = update.get("sessionUpdate").and_then(Value::as_str);
+    if provider == ProviderKind::Fx
+        && !state.produced_content
+        && kind == Some("agent_message_chunk")
+        && update
+            .pointer("/content/text")
+            .and_then(Value::as_str)
+            .is_some_and(fx_context_notice)
+    {
+        return Ok(());
+    }
     if matches!(
         kind,
         Some(
@@ -1600,6 +1718,10 @@ fn handle_session_update(
         _ => {}
     }
     Ok(())
+}
+
+fn fx_context_notice(text: &str) -> bool {
+    text.starts_with("[context] ") || text.starts_with("skill discovery warning: ")
 }
 
 #[derive(Default)]
@@ -1713,7 +1835,7 @@ impl DriverControl for AcpDriver {
     }
 
     fn supports_steer(&self) -> bool {
-        true
+        self.supports_steer
     }
 
     fn steer(&self, prompt: String) {
@@ -1907,18 +2029,104 @@ mod tests {
             ],
         );
         assert_eq!(
-            desired_mode(Some(&modes), RuntimeMode::FullAccess, InteractionMode::Plan)
-                .map(|mode| mode.to_string()),
+            desired_mode(
+                ProviderKind::Cursor,
+                Some(&modes),
+                RuntimeMode::FullAccess,
+                InteractionMode::Plan
+            )
+            .map(|mode| mode.to_string()),
             Some("plan".to_owned())
         );
         assert!(
             desired_mode(
+                ProviderKind::Cursor,
                 Some(&modes),
                 RuntimeMode::FullAccess,
                 InteractionMode::Build
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn fx_access_mode_selects_ask_or_code() {
+        let modes = SessionModeState::new(
+            "code",
+            vec![
+                SessionMode::new("ask", "Ask before sensitive actions"),
+                SessionMode::new("code", "Review sensitive actions automatically"),
+            ],
+        );
+        assert_eq!(
+            desired_mode(
+                ProviderKind::Fx,
+                Some(&modes),
+                RuntimeMode::Ask,
+                InteractionMode::Build
+            )
+            .map(|mode| mode.to_string()),
+            Some("ask".to_owned())
+        );
+        assert!(
+            desired_mode(
+                ProviderKind::Fx,
+                Some(&modes),
+                RuntimeMode::FullAccess,
+                InteractionMode::Build
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn fx_launches_its_documented_acp_subcommand() {
+        let launch = launch_for(ProviderKind::Fx).unwrap();
+        assert_eq!(launch.args, ["acp"]);
+        assert!(launch.env.is_empty());
+    }
+
+    #[test]
+    fn fx_model_option_ignores_provider_selector_in_same_category() {
+        let provider = select_config_option(
+            "provider",
+            SessionConfigOptionCategory::Model,
+            "gateway",
+            &["gateway", "codex", "grok"],
+        );
+        let model = select_config_option(
+            "model",
+            SessionConfigOptionCategory::Model,
+            "openai/gpt-5.6-sol",
+            &["openai/gpt-5.6-sol", "anthropic/claude-sonnet-5"],
+        );
+
+        assert_eq!(
+            fx_model_option(&[provider, model]).map(|option| option.id.to_string()),
+            Some("model".to_owned())
+        );
+    }
+
+    #[test]
+    fn fx_gateway_model_selects_the_gateway_route_first() {
+        let provider = select_config_option(
+            "provider",
+            SessionConfigOptionCategory::Model,
+            "codex",
+            &["gateway", "codex", "grok"],
+        );
+        let model = select_config_option(
+            "model",
+            SessionConfigOptionCategory::Model,
+            "gpt-5.6-luna",
+            &["gpt-5.6-sol", "gpt-5.6-luna"],
+        );
+        let options = [provider, model];
+
+        let (option, value) =
+            fx_model_provider_switch(&options, "openai/gpt-5.6-luna-fast").unwrap();
+        assert_eq!(option.id.to_string(), "provider");
+        assert_eq!(value, "gateway");
     }
 
     #[test]
@@ -2115,8 +2323,13 @@ mod tests {
         ];
         for update in updates {
             let update = serde_json::from_value(update).unwrap();
-            handle_session_update(SessionNotification::new("s", update), &events, &mut state)
-                .unwrap();
+            handle_session_update(
+                ProviderKind::Cursor,
+                SessionNotification::new("s", update),
+                &events,
+                &mut state,
+            )
+            .unwrap();
         }
 
         let seen = event_rx.try_iter().collect::<Vec<_>>();
@@ -2135,6 +2348,37 @@ mod tests {
                 context_window: Some(500000),
             }
         ));
+    }
+
+    #[test]
+    fn fx_context_notices_do_not_become_assistant_text() {
+        let (events, event_rx) = crossbeam_channel::unbounded();
+        let mut state = AcpStreamState::default();
+        for text in [
+            "[context] skill catalog omitted 19 entries",
+            "skill discovery warning: candidate was skipped",
+            "Hi! How can I help?",
+            "[context] is ordinary text after the answer starts",
+        ] {
+            let update = serde_json::from_value(json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text}
+            }))
+            .unwrap();
+            handle_session_update(
+                ProviderKind::Fx,
+                SessionNotification::new("s", update),
+                &events,
+                &mut state,
+            )
+            .unwrap();
+        }
+
+        let seen = event_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(seen.len(), 2);
+        assert!(matches!(&seen[0], DriverEvent::TextDelta(text) if text == "Hi! How can I help?"));
+        assert!(matches!(&seen[1], DriverEvent::TextDelta(text) if text.starts_with("[context]")));
+        assert!(state.produced_content);
     }
 
     #[test]

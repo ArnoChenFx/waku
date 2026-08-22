@@ -1804,13 +1804,21 @@ impl Waku {
             .selected_session()
             .map(|session| session.interaction_mode)
             .unwrap_or_default();
-        let supports_plan = self.selected_session().is_none_or(|session| {
-            session.provider != ProviderKind::DeepSeek
-                || self.agent_preset_for_session(session).as_deref() != Some("minimal")
+        let selected_session = self.selected_session();
+        let supports_plan = selected_session.is_none_or(|session| {
+            session.provider != ProviderKind::Fx
+                && (session.provider != ProviderKind::DeepSeek
+                    || self.agent_preset_for_session(session).as_deref() != Some("minimal"))
         });
-        // A stale state can still be switched back to Build; Minimal simply
-        // cannot be toggled from Build into a plan capability it does not mount.
+        // A stale state can still be switched back to Build; providers without
+        // a plan capability cannot be toggled from Build into one.
         let interactive = mode == InteractionMode::Plan || supports_plan;
+        let plan_unavailable_message = selected_session
+            .filter(|session| session.provider == ProviderKind::Fx)
+            .map_or_else(
+                || tr!("agent_preset.minimal_no_plan"),
+                |_| tr!("mode.plan_not_supported"),
+            );
         let next_mode = if mode == InteractionMode::Plan {
             InteractionMode::Build
         } else {
@@ -1859,7 +1867,7 @@ impl Waku {
             .when(!interactive, |element| {
                 element
                     .opacity(0.7)
-                    .tooltip(Tooltip::text(tr!("agent_preset.minimal_no_plan")))
+                    .tooltip(Tooltip::text(plan_unavailable_message))
             })
             .into_any_element()
     }

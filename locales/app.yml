@@ -789,6 +789,8 @@ mode.full_access_description:
   en: Allow commands and edits without prompts
 mode.switch_to:
   en: Switch to %{mode}
+mode.plan_not_supported:
+  en: This agent does not support Plan
 
 agent_preset.standard:
   en: Standard mode

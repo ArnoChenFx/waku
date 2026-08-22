@@ -16,6 +16,8 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Add Fx support, including AI Gateway model routing and clean transcript output
+
 ## [0.1.12]
 
 - Invoke Codex, Pi, and Oh My Pi skills with their native syntax
