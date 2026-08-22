@@ -16,9 +16,10 @@
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::io::Read;
+use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -650,6 +651,7 @@ impl Drop for ClaudeTaskOutputTails {
     }
 }
 
+#[cfg(unix)]
 const CLAUDE_TASK_OUTPUT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Claude keeps live Bash output outside its JSON stream. The installed CLI
@@ -667,6 +669,7 @@ fn claude_task_output_path(session_id: &str, task_id: &str) -> Option<PathBuf> {
     )
 }
 
+#[cfg(unix)]
 fn claude_task_output_path_in(root: &Path, session_id: &str, task_id: &str) -> Option<PathBuf> {
     if task_id.is_empty()
         || task_id.contains('/')
@@ -690,6 +693,7 @@ fn claude_task_output_path_in(root: &Path, session_id: &str, task_id: &str) -> O
         .find(|path| path.is_file())
 }
 
+#[cfg(unix)]
 fn drain_utf8_output(bytes: &mut Vec<u8>, final_read: bool) -> Option<String> {
     if bytes.is_empty() {
         return None;
@@ -1714,6 +1718,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     #[test]
     fn locates_claudes_native_task_output_across_workspace_slugs() {
         let root = std::env::temp_dir().join(format!("waku-claude-output-test-{}", Uuid::new_v4()));
@@ -1736,6 +1741,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn live_task_output_preserves_split_utf8() {
         let bytes = "first 界".as_bytes();
@@ -1754,6 +1760,7 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn native_task_output_streams_before_completion() {
         let root = std::env::temp_dir().join(format!("waku-claude-tail-test-{}", Uuid::new_v4()));
