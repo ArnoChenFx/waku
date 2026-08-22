@@ -61,39 +61,50 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
             });
         }
     };
-    let home_join = |suffix: &str| home.as_deref().map(|home| home.join(suffix));
-    push(SkillSource::Shared, home_join(".agents/skills"));
+    // Segment-by-segment joins keep every separator native. A flat
+    // `home.join("a/b")` bakes `/` into the stored path on Windows, which
+    // renders mixed ("C:\a/b") and fails the shell's reveal API.
+    let home_join = |segments: &[&str]| {
+        home.as_deref().map(|home| {
+            let mut root = home.to_path_buf();
+            for segment in segments {
+                root.push(segment);
+            }
+            root
+        })
+    };
+    push(SkillSource::Shared, home_join(&[".agents", "skills"]));
     push(
         SkillSource::Provider(ProviderKind::Claude),
         claude_config_dir.map(|dir| dir.join("skills")),
     );
     push(
         SkillSource::Provider(ProviderKind::Codex),
-        home_join(".codex/skills"),
+        home_join(&[".codex", "skills"]),
     );
     push(
         SkillSource::Provider(ProviderKind::OpenCode),
-        home_join(".config/opencode/skills"),
+        home_join(&[".config", "opencode", "skills"]),
     );
     push(
         SkillSource::Provider(ProviderKind::Cursor),
-        home_join(".cursor/skills"),
+        home_join(&[".cursor", "skills"]),
     );
     push(
         SkillSource::Provider(ProviderKind::Fx),
-        home_join(".fx/skills"),
+        home_join(&[".fx", "skills"]),
     );
     push(
         SkillSource::Provider(ProviderKind::Pi),
-        home_join(".pi/agent/skills"),
+        home_join(&[".pi", "agent", "skills"]),
     );
     push(
         SkillSource::Provider(ProviderKind::OhMyPi),
-        home_join(".omp/agent/skills"),
+        home_join(&[".omp", "agent", "skills"]),
     );
     push(
         SkillSource::Provider(ProviderKind::Amp),
-        home_join(".config/agents/skills"),
+        home_join(&[".config", "agents", "skills"]),
     );
     locations
 }
@@ -101,30 +112,42 @@ pub fn user_skill_locations() -> Vec<SkillLocation> {
 /// Every project-scope skill root under `project_root`. Path joins only.
 pub fn project_skill_locations(project_root: &Path, project_name: &str) -> Vec<SkillLocation> {
     [
-        (SkillSource::Shared, ".agents/skills"),
+        (SkillSource::Shared, &[".agents", "skills"][..]),
         (
             SkillSource::Provider(ProviderKind::Claude),
-            ".claude/skills",
+            &[".claude", "skills"][..],
         ),
-        (SkillSource::Provider(ProviderKind::Codex), ".codex/skills"),
+        (
+            SkillSource::Provider(ProviderKind::Codex),
+            &[".codex", "skills"][..],
+        ),
         (
             SkillSource::Provider(ProviderKind::OpenCode),
-            ".opencode/skills",
+            &[".opencode", "skills"][..],
         ),
         (
             SkillSource::Provider(ProviderKind::Cursor),
-            ".cursor/skills",
+            &[".cursor", "skills"][..],
         ),
-        (SkillSource::Provider(ProviderKind::Fx), "skills"),
-        (SkillSource::Provider(ProviderKind::Pi), ".pi/skills"),
-        (SkillSource::Provider(ProviderKind::OhMyPi), ".omp/skills"),
+        (SkillSource::Provider(ProviderKind::Fx), &["skills"][..]),
+        (SkillSource::Provider(ProviderKind::Pi), &[".pi", "skills"][..]),
+        (
+            SkillSource::Provider(ProviderKind::OhMyPi),
+            &[".omp", "skills"][..],
+        ),
     ]
     .into_iter()
-    .map(|(source, suffix)| SkillLocation {
-        source,
-        scope: SkillScope::Project,
-        root: project_root.join(suffix),
-        project: Some(project_name.to_owned()),
+    .map(|(source, segments)| {
+        let mut root = project_root.to_path_buf();
+        for segment in segments {
+            root.push(segment);
+        }
+        SkillLocation {
+            source,
+            scope: SkillScope::Project,
+            root,
+            project: Some(project_name.to_owned()),
+        }
     })
     .collect()
 }
@@ -350,8 +373,9 @@ struct SkillFrontmatter<'a> {
 }
 
 /// Pull the keys the page shows out of a leading YAML block, without a YAML
-/// parser: skill files use flat `key: value` lines in practice, and an
-/// unparsed extra key must not cost the skill its listing.
+/// parser: skill files use flat `key: value` lines and block-scalar
+/// descriptions in practice, and an unparsed extra key must not cost the
+/// skill its listing.
 fn parse_skill_frontmatter(contents: &str) -> SkillFrontmatter<'_> {
     let mut front = SkillFrontmatter {
         name: None,
@@ -366,18 +390,11 @@ fn parse_skill_frontmatter(contents: &str) -> SkillFrontmatter<'_> {
         return front;
     };
     front.body = body.trim_start_matches(['-']).trim_start();
-    for line in block.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim().trim_matches('"').trim_matches('\'');
-        if value.is_empty() {
-            continue;
-        }
-        match key.trim() {
-            "name" => front.name = Some(value.to_owned()),
-            "description" => front.description = Some(value.to_owned()),
-            "allowed-tools" => front.allowed_tools = Some(value.to_owned()),
+    for (key, value) in crate::frontmatter::entries(block) {
+        match key.as_str() {
+            "name" => front.name = Some(value),
+            "description" => front.description = Some(value),
+            "allowed-tools" => front.allowed_tools = Some(value),
             _ => {}
         }
     }
@@ -478,6 +495,28 @@ mod tests {
         let dormant = catalog.skills.iter().find(|s| s.name == "dormant").unwrap();
         assert!(!dormant.enabled);
         assert_eq!(catalog.disabled_count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn block_scalar_descriptions_resolve_onto_their_key() {
+        let root = temp_root("block-scalar");
+        // The shape real installers emit: a literal-block description whose
+        // body used to collapse to the bare `|` indicator.
+        write_skill(
+            &root,
+            "scrape",
+            "---\nname: scrape\ndescription: |\n  Extract a URL's content as clean markdown.\n  Use whenever the user provides a URL.\nallowed-tools:\n  - Bash(firecrawl *)\n---\n# scrape\n\nBody text.",
+        );
+        let catalog = scan_skills(&vec![user_location(SkillSource::Shared, &root)]);
+        let skill = &catalog.skills[0];
+        assert_eq!(skill.name, "scrape");
+        assert_eq!(
+            skill.description,
+            "Extract a URL's content as clean markdown. Use whenever the user provides a URL."
+        );
+        assert_eq!(skill.allowed_tools.as_deref(), Some("Bash(firecrawl *)"));
+        assert_eq!(skill.body, "# scrape\n\nBody text.");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -597,10 +636,7 @@ mod tests {
     fn every_ecosystem_root_is_listed() {
         let projects = vec![("waku".to_owned(), PathBuf::from("/tmp/waku"))];
         let locations = skill_locations(&projects);
-        let roots: Vec<String> = locations
-            .iter()
-            .map(|location| location.root.display().to_string())
-            .collect();
+        // Component-wise matches: the stored separators are platform-native.
         for expected in [
             ".agents/skills",
             ".claude/skills",
@@ -611,23 +647,32 @@ mod tests {
             ".config/agents/skills",
         ] {
             assert!(
-                roots.iter().any(|root| root.ends_with(expected)),
+                locations
+                    .iter()
+                    .any(|location| location.root.ends_with(Path::new(expected))),
                 "user root missing: {expected}"
             );
         }
         for expected in [
-            "/tmp/waku/.agents/skills",
-            "/tmp/waku/.claude/skills",
-            "/tmp/waku/.codex/skills",
-            "/tmp/waku/.opencode/skills",
-            "/tmp/waku/.cursor/skills",
-            "/tmp/waku/.pi/skills",
+            ".agents/skills",
+            ".claude/skills",
+            ".codex/skills",
+            ".opencode/skills",
+            ".cursor/skills",
+            ".pi/skills",
         ] {
+            let expected = Path::new("/tmp/waku").join(expected);
             assert!(
-                roots.iter().any(|root| root == expected),
-                "project root missing: {expected}"
+                locations.iter().any(|location| location.root == expected),
+                "project root missing: {}",
+                expected.display()
             );
         }
+        // No stored path carries a baked-in `/` segment on any platform.
+        assert!(locations.iter().all(|location| location
+            .root
+            .components()
+            .all(|component| !component.as_os_str().to_string_lossy().contains('/'))));
         // User scope leads the scan, so grouped entries prefer user copies.
         assert!(locations[0].scope == SkillScope::User);
         assert_eq!(locations[0].source, SkillSource::Shared);

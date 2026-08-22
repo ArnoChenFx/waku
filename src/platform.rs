@@ -335,8 +335,17 @@ pub fn open_path_in_app(_: &std::path::Path, _: &str) {}
 
 /// Select `path` in the platform file manager. GPUI dispatches Linux portal
 /// and subprocess work away from the UI thread.
+///
+/// Windows' shell APIs (`SHParseDisplayName`, `SHOpenFolderAndSelectItems`)
+/// reject forward slashes with `E_INVALIDARG`, so separators are normalized
+/// first — paths joined from `"a/b"`-style suffixes would otherwise open
+/// nothing at all.
 pub fn reveal_in_file_manager(path: &std::path::Path, cx: &gpui::App) {
-    cx.reveal_path(path);
+    #[cfg(target_os = "windows")]
+    let path = std::path::PathBuf::from(path.as_os_str().to_string_lossy().replace('/', "\\"));
+    #[cfg(not(target_os = "windows"))]
+    let path = path.to_path_buf();
+    cx.reveal_path(&path);
 }
 
 /// Open `path` with its default application — a document in its editor.
