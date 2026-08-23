@@ -54,7 +54,7 @@ use crate::ui::tooltip::Tooltip;
 use crate::browser::BrowserView;
 use crate::persistence::{
     ComposerDraftStore, ComposerDrafts, DEFAULT_RIGHT_PANEL_WIDTH, DEFAULT_SIDEBAR_WIDTH,
-    PersistedState, PersistedWindowState, StateStore,
+    PersistedState, PersistedWindowState, SidebarGrouping, SidebarOrdering, StateStore,
 };
 use crate::query::{Query, QueryCache};
 use crate::review_diff::{Snapshot as ReviewDiffSnapshot, Source as ReviewDiffSource};
@@ -787,7 +787,7 @@ fn traits_choice(theme: Theme, label: String, is_default: bool, selected: bool) 
             .when(is_default, |element| {
                 element.child(
                     div()
-                        .h(px(16.0))
+                        .h(px(18.0))
                         .px(px(5.0))
                         .flex_none()
                         .rounded(px(4.0))
@@ -796,7 +796,7 @@ fn traits_choice(theme: Theme, label: String, is_default: bool, selected: bool) 
                         .bg(theme.overlay)
                         .flex()
                         .items_center()
-                        .text_size(sp(9.0))
+                        .text_size(sp(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text_tertiary)
                         .child(tr!("common.default")),
@@ -1292,9 +1292,14 @@ pub struct Waku {
     /// One stable field reused across sidebar rows so virtualization never
     /// replaces the focused editor while a rename is in progress.
     session_rename_input: Entity<TextInput>,
-    /// Date groups the user has folded in the sidebar. This is intentionally
-    /// runtime-only, like transcript disclosure state.
-    sidebar_collapsed_groups: HashSet<SessionDateGroup>,
+    /// Groups the user has folded in either sidebar view. This is
+    /// intentionally runtime-only, like transcript disclosure state.
+    sidebar_collapsed_groups: HashSet<SidebarGroup>,
+    /// Number of older sessions revealed inside each project section. This is
+    /// runtime-only so every launch starts with the recent three-day view.
+    sidebar_project_reveal_counts: HashMap<SidebarGroup, usize>,
+    /// Stable keyboard focus for each virtualized project-history reveal row.
+    sidebar_show_more_focuses: RefCell<HashMap<SidebarGroup, FocusHandle>>,
     sidebar_visible: bool,
     sidebar_width: f32,
     right_panel_visible: bool,
@@ -1438,6 +1443,11 @@ pub struct Waku {
     /// Fingerprint + snapshot pair backing `sidebar_rows_cached`.
     sidebar_rows_fingerprint: Cell<Option<u64>>,
     sidebar_rows_snapshot: RefCell<Rc<Vec<SidebarRow>>>,
+    /// Branch labels for ordinary local project paths, resolved together on a
+    /// background executor so sidebar rows only read memory.
+    sidebar_branch_labels: RefCell<HashMap<PathBuf, SharedString>>,
+    sidebar_branch_scan_fingerprint: Cell<Option<u64>>,
+    sidebar_branch_scan_generation: Cell<u64>,
     transcript_row_kinds: RefCell<Vec<TranscriptRowKind>>,
     /// Fingerprint of the transcript inputs `transcript_row_kinds` was folded
     /// from, so an unchanged transcript costs nothing on a frame. `None` until
@@ -1584,7 +1594,7 @@ use components::*;
 pub use image_preview::init as init_image_preview_keys;
 pub use settings::init as init_settings_keys;
 pub use sidebar::init as init_sidebar_keys;
-use sidebar::{SessionDateGroup, SidebarRow};
+use sidebar::{SidebarGroup, SidebarRow};
 pub use skills_page::init as init_skills_keys;
 use streaming::*;
 use transcript::*;
@@ -2785,6 +2795,8 @@ impl Waku {
                 session_rename: None,
                 session_rename_input,
                 sidebar_collapsed_groups: HashSet::new(),
+                sidebar_project_reveal_counts: HashMap::new(),
+                sidebar_show_more_focuses: RefCell::new(HashMap::new()),
                 sidebar_visible,
                 sidebar_width,
                 right_panel_visible,
@@ -2884,6 +2896,9 @@ impl Waku {
                 sidebar_row_cache: RefCell::new(Vec::new()),
                 sidebar_rows_fingerprint: Cell::new(None),
                 sidebar_rows_snapshot: RefCell::new(Rc::new(Vec::new())),
+                sidebar_branch_labels: RefCell::new(HashMap::new()),
+                sidebar_branch_scan_fingerprint: Cell::new(None),
+                sidebar_branch_scan_generation: Cell::new(0),
                 transcript_row_kinds: RefCell::new(Vec::new()),
                 transcript_row_kinds_fingerprint: Cell::new(None),
                 transcript_navigation_turns: RefCell::new(Rc::new(Vec::new())),

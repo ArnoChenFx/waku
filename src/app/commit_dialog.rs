@@ -733,7 +733,7 @@ impl Waku {
                     div()
                         .px(px(20.0))
                         .pb(px(10.0))
-                        .text_size(sp(11.5))
+                        .text_size(sp(12.5))
                         .line_height(sp(16.0))
                         .text_color(theme.danger)
                         .child(error),
@@ -834,7 +834,7 @@ fn render_commit_action_row(
                     .items_center()
                     .justify_center()
                     .bg(theme.overlay_strong)
-                    .text_size(sp(11.5))
+                    .text_size(sp(12.5))
                     .text_color(if enabled {
                         theme.text_secondary
                     } else {

@@ -334,14 +334,14 @@ impl RenderOnce for MenuChip {
         self.base
             .h(self
                 .height
-                .unwrap_or(if self.outlined { px(30.0) } else { px(24.0) }))
+                .unwrap_or(if self.outlined { px(30.0) } else { px(26.0) }))
             .px(if self.outlined { px(10.0) } else { px(7.0) })
             .rounded(if self.outlined { px(7.0) } else { px(6.0) })
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(sp(11.5))
-            .line_height(sp(14.0))
+            .text_size(sp(13.0))
+            .line_height(sp(16.0))
             .cursor_default()
             .focus_visible(|style| style.border_1().border_color(theme.accent))
             .when(self.outlined, |element| {
@@ -356,7 +356,7 @@ impl RenderOnce for MenuChip {
             })
             .when(self.disabled, |element| element.opacity(0.7))
             .when_some(self.icon, |element, (path, color)| {
-                element.child(icon(path, 10.5, color))
+                element.child(icon(path, 12.0, color))
             })
             .child(
                 div()
@@ -366,7 +366,7 @@ impl RenderOnce for MenuChip {
                     .child(self.label),
             )
             .when(self.caret, |element| {
-                element.child(icon("icons/chevron-down.svg", 9.0, theme.text_ghost))
+                element.child(icon("icons/chevron-down.svg", 10.5, theme.text_ghost))
             })
     }
 }

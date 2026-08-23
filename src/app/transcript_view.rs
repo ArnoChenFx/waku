@@ -1437,7 +1437,7 @@ impl Waku {
             .items_center()
             .gap(px(5.0))
             .cursor_default()
-            .text_size(sp(11.5))
+            .text_size(sp(12.5))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_secondary)
             .focus_visible(|style| style.border_color(theme.accent))
@@ -1511,7 +1511,7 @@ impl Waku {
                                     .flex()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .text_size(sp(11.0))
+                                    .text_size(sp(12.5))
                                     .line_height(sp(14.0))
                                     .child(
                                         div()
@@ -1552,7 +1552,7 @@ impl Waku {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(sp(11.5))
+                            .text_size(sp(12.5))
                             .text_color(theme.text_secondary)
                             .tooltip(Tooltip::text(file.path.clone()))
                             .child(file.path.clone()),
@@ -1560,14 +1560,14 @@ impl Waku {
                     .child(
                         div()
                             .flex_none()
-                            .text_size(sp(10.5))
+                            .text_size(sp(12.5))
                             .text_color(theme.success)
                             .child(format!("+{}", file.additions)),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .text_size(sp(10.5))
+                            .text_size(sp(12.5))
                             .text_color(theme.danger)
                             .child(format!("-{}", file.deletions)),
                     ),
@@ -1601,7 +1601,7 @@ impl Waku {
                     .items_center()
                     .gap(px(6.0))
                     .cursor_default()
-                    .text_size(sp(11.5))
+                    .text_size(sp(12.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
                     .focus_visible(|style| style.bg(theme.overlay_strong))
@@ -1677,8 +1677,8 @@ impl Waku {
                     .items_center()
                     .gap(px(5.0))
                     .cursor_default()
-                    .text_size(sp(11.5))
-                    .line_height(sp(16.0))
+                    .text_size(sp(13.5))
+                    .line_height(sp(18.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_tertiary)
                     .child(SharedString::from(label))
@@ -1688,7 +1688,7 @@ impl Waku {
                         } else {
                             "icons/chevron-right.svg"
                         },
-                        10.0,
+                        11.5,
                         theme.text_tertiary,
                     ))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1718,8 +1718,8 @@ impl Waku {
             .child(working_wave_dots(theme.text_tertiary))
             .child(
                 div()
-                    .text_size(sp(11.5))
-                    .line_height(sp(16.0))
+                    .text_size(sp(13.5))
+                    .line_height(sp(18.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_tertiary)
                     .child(SharedString::from(tr!(
@@ -1899,7 +1899,7 @@ impl Waku {
                     .flex()
                     .items_center()
                     .cursor_default()
-                    .text_size(sp(9.5))
+                    .text_size(sp(12.5))
                     .text_color(color)
                     .focus_visible(|style| style.border_color(theme.accent))
                     .hover(|style| style.bg(theme.overlay_strong))
@@ -1985,7 +1985,7 @@ impl Waku {
                         .when(!item_expanded, |element| {
                             element.rounded_bl(px(8.0)).rounded_br(px(8.0))
                         })
-                        .text_size(sp(12.0))
+                        .text_size(sp(12.5))
                         .line_height(sp(16.0))
                         .when(has_detail, |element| {
                             element
@@ -2552,7 +2552,7 @@ fn activity_diff_break_row(label: Option<String>, theme: &Theme) -> AnyElement {
         .font_family(md::render::MONO_FAMILY)
         // Fixed like the Review panel's gap and hunk captions: a caption in
         // the code surface follows neither font setting.
-        .text_size(px(10.5))
+        .text_size(px(12.5))
         .bg(theme.overlay)
         .text_color(theme.text_ghost)
         .child(

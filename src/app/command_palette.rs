@@ -1003,7 +1003,7 @@ impl Waku {
                     .child(
                         div()
                             .mt(px(5.0))
-                            .text_size(sp(11.5))
+                            .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
                             .child(tr!("command_palette.no_results_hint")),
                     ),
@@ -1019,7 +1019,7 @@ impl Waku {
                             .pt(px(10.0))
                             .flex()
                             .items_center()
-                            .text_size(sp(11.0))
+                            .text_size(sp(12.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_tertiary)
                             .child(item.section.label()),
@@ -1112,7 +1112,7 @@ impl Waku {
                                                 div()
                                                     .min_w_0()
                                                     .truncate()
-                                                    .text_size(sp(11.5))
+                                                    .text_size(sp(12.5))
                                                     .text_color(theme.text_tertiary)
                                                     .child(detail),
                                             )
@@ -1125,7 +1125,7 @@ impl Waku {
                                             .w_full()
                                             .overflow_hidden()
                                             .whitespace_nowrap()
-                                            .text_size(sp(11.5))
+                                            .text_size(sp(12.5))
                                             .child(palette_content_match_text(
                                                 &matched,
                                                 &search_query,
@@ -1147,7 +1147,7 @@ impl Waku {
                                     .items_center()
                                     .justify_center()
                                     .bg(theme.overlay_strong)
-                                    .text_size(sp(11.5))
+                                    .text_size(sp(12.5))
                                     .text_color(theme.text_tertiary)
                                     .child(shortcut),
                             )

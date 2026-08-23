@@ -432,6 +432,22 @@ sidebar.today:
   en: Today
 sidebar.search:
   en: Search
+sidebar.options:
+  en: Sidebar options
+sidebar.grouping:
+  en: Grouping
+sidebar.grouping_project:
+  en: Project
+sidebar.grouping_updated:
+  en: Updated
+sidebar.ordering:
+  en: Ordering
+sidebar.ordering_newest:
+  en: Newest first
+sidebar.ordering_oldest:
+  en: Oldest first
+sidebar.show_more:
+  en: Show more
 sidebar.yesterday:
   en: Yesterday
 sidebar.this_week:

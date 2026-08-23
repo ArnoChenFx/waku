@@ -493,7 +493,7 @@ impl Waku {
                             .flex_none()
                             .max_w(px(260.0))
                             .truncate()
-                            .text_size(sp(12.0))
+                            .text_size(sp(12.5))
                             .child(matched_text(
                                 composer_text,
                                 name_ranges,
@@ -506,7 +506,7 @@ impl Waku {
                         element.child(
                             div()
                                 .flex_none()
-                                .text_size(sp(11.0))
+                                .text_size(sp(12.5))
                                 .text_color(theme.text_ghost)
                                 .child(hint),
                         )
@@ -516,13 +516,13 @@ impl Waku {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(sp(11.0))
+                            .text_size(sp(12.5))
                             .text_color(theme.text_tertiary)
                             .child(SharedString::from(command.description.clone())),
                     )
                     .child(
                         div()
-                            .h(px(16.0))
+                            .h(px(18.0))
                             .px(px(5.0))
                             .flex_none()
                             .rounded(px(4.0))
@@ -530,7 +530,7 @@ impl Waku {
                             .border_color(theme.border)
                             .flex()
                             .items_center()
-                            .text_size(sp(9.0))
+                            .text_size(sp(12.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_tertiary)
                             .child(command.scope.label()),
@@ -561,7 +561,7 @@ impl Waku {
                             .flex_none()
                             .max_w(px(300.0))
                             .truncate()
-                            .text_size(sp(12.0))
+                            .text_size(sp(12.5))
                             .child(matched_text(
                                 name.to_owned(),
                                 highlight_byte_ranges(name, &scored.positions, name_char_offset),
@@ -576,7 +576,7 @@ impl Waku {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(sp(11.0))
+                                .text_size(sp(12.5))
                                 .child(matched_text(
                                     parent.to_owned(),
                                     highlight_byte_ranges(parent, &scored.positions, 0),
