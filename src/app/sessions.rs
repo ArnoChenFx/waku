@@ -7,10 +7,7 @@ fn retain_runtime_after_cancel(provider: ProviderKind) -> bool {
     !matches!(provider, ProviderKind::Codex | ProviderKind::Amp)
 }
 
-fn new_task_runtime_mode(
-    current: Option<&AgentSession>,
-    remembered: RuntimeMode,
-) -> RuntimeMode {
+fn new_task_runtime_mode(current: Option<&AgentSession>, remembered: RuntimeMode) -> RuntimeMode {
     current
         .map(|session| session.runtime_mode)
         .unwrap_or(remembered)
@@ -250,9 +247,8 @@ impl Waku {
         };
         self.branch_snapshots.invalidate(&workspace_path);
         self.sidebar_branch_scan_fingerprint.set(None);
-        self.sidebar_branch_scan_generation.set(
-            self.sidebar_branch_scan_generation.get().wrapping_add(1),
-        );
+        self.sidebar_branch_scan_generation
+            .set(self.sidebar_branch_scan_generation.get().wrapping_add(1));
         self.refresh_workspace_surfaces(cx);
         self.invalidate_composer_sources(cx);
     }
