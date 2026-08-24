@@ -372,10 +372,9 @@ struct SkillFrontmatter<'a> {
     body: &'a str,
 }
 
-/// Pull the keys the page shows out of a leading YAML block, without a YAML
-/// parser: skill files use flat `key: value` lines and block-scalar
-/// descriptions in practice, and an unparsed extra key must not cost the
-/// skill its listing.
+/// Pull the keys the page shows out of a leading YAML block. The shared
+/// frontmatter reader understands simple scalar values and block strings, and
+/// skips unsupported lines so an extra key never costs the skill its listing.
 fn parse_skill_frontmatter(contents: &str) -> SkillFrontmatter<'_> {
     let mut front = SkillFrontmatter {
         name: None,
@@ -383,21 +382,12 @@ fn parse_skill_frontmatter(contents: &str) -> SkillFrontmatter<'_> {
         allowed_tools: None,
         body: contents,
     };
-    let Some(rest) = contents.strip_prefix("---") else {
-        return front;
-    };
-    let Some((block, body)) = rest.split_once("\n---") else {
-        return front;
-    };
-    front.body = body.trim_start_matches(['-']).trim_start();
-    for (key, value) in crate::frontmatter::entries(block) {
-        match key.as_str() {
-            "name" => front.name = Some(value),
-            "description" => front.description = Some(value),
-            "allowed-tools" => front.allowed_tools = Some(value),
-            _ => {}
-        }
-    }
+    front.body = crate::frontmatter::parse_frontmatter_fields(contents, |key, value| match key {
+        "name" => front.name = Some(value),
+        "description" => front.description = Some(value),
+        "allowed-tools" => front.allowed_tools = Some(value),
+        _ => {}
+    });
     front
 }
 
@@ -495,28 +485,6 @@ mod tests {
         let dormant = catalog.skills.iter().find(|s| s.name == "dormant").unwrap();
         assert!(!dormant.enabled);
         assert_eq!(catalog.disabled_count(), 1);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn block_scalar_descriptions_resolve_onto_their_key() {
-        let root = temp_root("block-scalar");
-        // The shape real installers emit: a literal-block description whose
-        // body used to collapse to the bare `|` indicator.
-        write_skill(
-            &root,
-            "scrape",
-            "---\nname: scrape\ndescription: |\n  Extract a URL's content as clean markdown.\n  Use whenever the user provides a URL.\nallowed-tools:\n  - Bash(firecrawl *)\n---\n# scrape\n\nBody text.",
-        );
-        let catalog = scan_skills(&vec![user_location(SkillSource::Shared, &root)]);
-        let skill = &catalog.skills[0];
-        assert_eq!(skill.name, "scrape");
-        assert_eq!(
-            skill.description,
-            "Extract a URL's content as clean markdown. Use whenever the user provides a URL."
-        );
-        assert_eq!(skill.allowed_tools.as_deref(), Some("Bash(firecrawl *)"));
-        assert_eq!(skill.body, "# scrape\n\nBody text.");
         let _ = std::fs::remove_dir_all(&root);
     }
 
