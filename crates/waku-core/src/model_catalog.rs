@@ -83,15 +83,10 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // route, so discovery is authoritative.
         ProviderKind::Fx => Vec::new(),
         ProviderKind::OpenCode => Vec::new(),
-        ProviderKind::Grok => {
-            let mut model = ProviderModel::new("grok-build", "Grok Build").default();
-            model.reasoning_efforts =
-                reasoning_options(["minimal", "low", "medium", "high", "xhigh", "max"]);
-            model.default_reasoning_effort = Some("high".to_owned());
-            model.context_windows = vec![ProviderModelOption::new("256k", "256K")];
-            model.default_context_window = Some("256k".to_owned());
-            vec![model]
-        },
+        // Grok's catalog comes from `grok models`, which includes any custom
+        // model the user configured. An invented fallback would offer a model
+        // the CLI rejects, so discovery is authoritative.
+        ProviderKind::Grok => Vec::new(),
         // Pi, Oh My Pi, and Kimi Code all take their catalog from the user's
         // configured LLM providers. A fabricated fallback would make
         // unavailable models look selectable.
@@ -631,34 +626,47 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
                 .unwrap_or_else(|| display_name_from_slug(id));
             let mut model = ProviderModel::new(id, display_name);
             model.is_default = default_model.as_deref() == Some(id);
-            let supports_reasoning = info.map(|c| c.supports_reasoning).unwrap_or(true);
-            if supports_reasoning {
-                model.reasoning_efforts =
-                    reasoning_options(["minimal", "low", "medium", "high", "xhigh", "max"]);
-                let default_effort = info
-                    .and_then(|c| c.default_reasoning.clone())
-                    .unwrap_or_else(|| "high".to_owned());
-                let valid = model
-                    .reasoning_efforts
-                    .iter()
-                    .any(|o| o.id == default_effort);
-                model.default_reasoning_effort = Some(if valid {
-                    default_effort
+            // 合并策略：自定义模型走 HEAD 的 config.toml 逻辑（支持 reasoning 开关和 context_window），
+            // 原生模型走上游的权威菜单（仅 grok-4.5/4.6 有 effort，且 context_window 按 500k/256k 区分）。
+            if let Some(custom_info) = info {
+                if custom_info.supports_reasoning {
+                    model.reasoning_efforts =
+                        reasoning_options(["minimal", "low", "medium", "high", "xhigh", "max"]);
+                    let default_effort = custom_info
+                        .default_reasoning
+                        .clone()
+                        .unwrap_or_else(|| "high".to_owned());
+                    let valid = model
+                        .reasoning_efforts
+                        .iter()
+                        .any(|o| o.id == default_effort);
+                    model.default_reasoning_effort = Some(if valid {
+                        default_effort
+                    } else {
+                        "high".to_owned()
+                    });
+                }
+                let (context_id, context_label) = if let Some(window) = custom_info.context_window {
+                    format_grok_context(window)
+                } else if id.contains("4.6") || id.contains("4.5") {
+                    ("500k".to_owned(), "500K".to_owned())
                 } else {
-                    "high".to_owned()
-                });
-            }
-            let context_window = info.and_then(|c| c.context_window);
-            let (context_id, context_label) = if let Some(window) = context_window {
-                format_grok_context(window)
-            } else if id.contains("4.6") || id.contains("4.5") {
-                ("500k".to_owned(), "500K".to_owned())
+                    ("256k".to_owned(), "256K".to_owned())
+                };
+                model.context_windows = vec![ProviderModelOption::new(context_id.clone(), context_label)];
+                model.default_context_window = Some(context_id);
+                Some(model)
             } else {
-                ("256k".to_owned(), "256K".to_owned())
-            };
-            model.context_windows = vec![ProviderModelOption::new(context_id.clone(), context_label)];
-            model.default_context_window = Some(context_id);
-            Some(model)
+                let mut model = grok_reasoning_model(model);
+                let (context_id, context_label) = if id.contains("4.6") || id.contains("4.5") {
+                    ("500k".to_owned(), "500K".to_owned())
+                } else {
+                    ("256k".to_owned(), "256K".to_owned())
+                };
+                model.context_windows = vec![ProviderModelOption::new(context_id.clone(), context_label)];
+                model.default_context_window = Some(context_id);
+                Some(model)
+            }
         })
         .collect()
 }
@@ -1246,6 +1254,22 @@ fn reasoning_options<const N: usize>(efforts: [&str; N]) -> Vec<ProviderModelOpt
         .collect()
 }
 
+/// The hardcoded reasoning menu is limited to the exact built-in models it
+/// was verified against. `grok models` also lists user-defined custom models,
+/// whose effort support is not knowable from the ID, so they get no menu.
+fn grok_reasoning_model(model: ProviderModel) -> ProviderModel {
+    match waku_protocol::model_catalog::grok_model_reasoning_efforts(&model.id) {
+        Some(efforts) => model.reasoning(
+            efforts
+                .iter()
+                .copied()
+                .map(|effort| ProviderModelOption::new(effort, reasoning_effort_label(effort))),
+            "high",
+        ),
+        None => model,
+    }
+}
+
 fn claude_reasoning_model(id: &str, name: &str) -> ProviderModel {
     ProviderModel::new(id, name).reasoning(
         reasoning_options(["low", "medium", "high", "xhigh", "max"]),
@@ -1674,13 +1698,44 @@ mod tests {
     #[test]
     fn parses_grok_default_and_available_models() {
         let models = parse_grok_models(
-            "You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n",
+            "You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n  - my-custom-test\n",
         );
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 3);
         assert_eq!(models[0].id, "grok-4.6");
         assert!(models[0].is_default);
+        assert_eq!(
+            models[0]
+                .reasoning_efforts
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(models[1].id, "grok-4.5");
         assert!(!models[1].is_default);
+        assert_eq!(
+            models[1]
+                .reasoning_efforts
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("high"));
+        // A user-defined custom model keeps the picker entry but gets no
+        // hardcoded reasoning menu; its effort support is not knowable from
+        // the listing.
+        assert_eq!(models[2].id, "my-custom-test");
+        assert!(models[2].reasoning_efforts.is_empty());
+        assert_eq!(models[2].default_reasoning_effort, None);
+    }
+
+    #[test]
+    fn grok_fallback_catalog_is_empty() {
+        // A fabricated fallback would offer a model the CLI rejects, so
+        // discovery is authoritative and the pre-discovery picker is empty.
+        assert!(fallback_models(ProviderKind::Grok).is_empty());
     }
 
     #[test]
