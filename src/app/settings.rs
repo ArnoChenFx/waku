@@ -1998,8 +1998,8 @@ impl Waku {
     }
 
     /// Commit the binary override edit for the expanded provider: empty means
-    /// detect from PATH. Re-detects that provider, which in turn refreshes its
-    /// version and model catalog.
+    /// detect from PATH. Re-detects that provider and refreshes every catalog
+    /// keyed by the executable path.
     pub(super) fn apply_provider_path_override(&mut self, cx: &mut Context<Self>) {
         let Some(provider) = self.expanded_provider_settings else {
             return;
@@ -2026,6 +2026,7 @@ impl Waku {
         }
         self.save();
         self.refresh_provider_detection(Some(provider));
+        self.refresh_composer_sources(cx);
         cx.notify();
     }
 

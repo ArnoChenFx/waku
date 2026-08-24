@@ -968,7 +968,6 @@ fn write_json<S: io::Read + io::Write, T: serde::Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WireDriverStartOptions;
     #[cfg(unix)]
     use crate::daemon::WakuBackend;
     #[cfg(unix)]
@@ -978,12 +977,13 @@ mod tests {
     use crate::persistence::StateStore;
     #[cfg(unix)]
     use crate::settings::DaemonSettingsStore;
+    use crate::{DaemonSettings, WireDriverStartOptions};
     #[cfg(unix)]
     use base64::Engine as _;
-    use crossbeam_channel::bounded;
+    use crossbeam_channel::{RecvTimeoutError, bounded};
     use serde_json::json;
     use std::path::PathBuf;
-    use waku_client::DaemonClient;
+    use waku_client::{DaemonClient, DaemonSupervisor};
 
     #[derive(Default)]
     struct TestBackend {
@@ -1005,6 +1005,9 @@ mod tests {
                 Command::AttachSession => Ok(ResponsePayload::SessionRuntime {
                     runtime_id: self.runtimes.lock().get(&session_id).copied(),
                     supports_steer: true,
+                }),
+                Command::GetSettings => Ok(ResponsePayload::Settings {
+                    settings: DaemonSettings::default(),
                 }),
                 Command::Prompt { prompt } => {
                     events.send(WireDriverEvent::new("textDelta", json!(prompt)))?;
@@ -1317,9 +1320,10 @@ mod tests {
         assert_eq!(event.event.kind, "connected");
 
         client.shutdown();
-        let exited = events.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(exited.runtime_id, runtime_id);
-        assert_eq!(exited.event.kind, "processExited");
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(1)),
+            Err(RecvTimeoutError::Disconnected)
+        ));
         server.join().unwrap();
     }
 
@@ -1431,6 +1435,91 @@ mod tests {
 
         source.shutdown();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn remote_supervisor_reconnects_without_losing_the_daemon_runtime() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let backend = Arc::new(TestBackend::default());
+        let first_shutdown = Arc::new(AtomicBool::new(false));
+        let first_server = {
+            let backend = backend.clone();
+            let shutdown = first_shutdown.clone();
+            std::thread::spawn(move || {
+                serve(
+                    listener,
+                    "secret".into(),
+                    backend,
+                    shutdown,
+                    ServerOptions::default(),
+                )
+                .unwrap()
+            })
+        };
+
+        let supervisor = DaemonSupervisor::connect(&address.to_string(), "secret".into()).unwrap();
+        let clients = supervisor.subscribe_clients();
+        let initial = clients.recv_timeout(Duration::from_secs(1)).unwrap();
+        let session_id = Uuid::new_v4();
+        let runtime_id = Uuid::new_v4();
+        initial
+            .request(
+                session_id,
+                runtime_id,
+                Command::Start {
+                    options: WireDriverStartOptions {
+                        provider: "codex".into(),
+                        binary: PathBuf::from("codex"),
+                        cwd: PathBuf::from("."),
+                        mode: "fullAccess".into(),
+                        interaction_mode: "build".into(),
+                        model: None,
+                        reasoning_effort: None,
+                        service_tier: None,
+                        context_window: None,
+                        agent_preset: None,
+                        computer_use_enabled: false,
+                        provider_cursor: None,
+                    },
+                },
+            )
+            .unwrap();
+
+        first_shutdown.store(true, Ordering::Release);
+        first_server.join().unwrap();
+
+        let listener = TcpListener::bind(address).unwrap();
+        let second_shutdown = Arc::new(AtomicBool::new(false));
+        let second_server = {
+            let backend = backend.clone();
+            let shutdown = second_shutdown.clone();
+            std::thread::spawn(move || {
+                serve(
+                    listener,
+                    "secret".into(),
+                    backend,
+                    shutdown,
+                    ServerOptions::default(),
+                )
+                .unwrap()
+            })
+        };
+
+        let replacement = clients.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!initial.same_connection(&replacement));
+        assert!(matches!(
+            replacement
+                .request(session_id, Uuid::nil(), Command::AttachSession)
+                .unwrap(),
+            ResponsePayload::SessionRuntime {
+                runtime_id: Some(attached),
+                supports_steer: true,
+            } if attached == runtime_id
+        ));
+
+        second_shutdown.store(true, Ordering::Release);
+        second_server.join().unwrap();
     }
 
     #[cfg(unix)]

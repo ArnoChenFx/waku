@@ -312,7 +312,11 @@ struct SupervisorInner {
 enum DaemonTarget {
     Local(DaemonProcess),
     Restarting(DaemonClient),
-    Remote(DaemonClient),
+    Remote {
+        client: DaemonClient,
+        address: String,
+        token: String,
+    },
 }
 
 impl DaemonTarget {
@@ -320,7 +324,7 @@ impl DaemonTarget {
         match self {
             Self::Local(process) => process.client(),
             Self::Restarting(client) => client.clone(),
-            Self::Remote(client) => client.clone(),
+            Self::Remote { client, .. } => client.clone(),
         }
     }
 }
@@ -359,7 +363,7 @@ impl DaemonSupervisor {
         let weak_inner = Arc::downgrade(&supervisor.inner);
         std::thread::Builder::new()
             .name("waku-daemon-supervisor".into())
-            .spawn(move || monitor_daemon(weak_inner, initial_stamp, watch_for_rebuilds))
+            .spawn(move || monitor_daemon(weak_inner, Some(initial_stamp), watch_for_rebuilds))
             .context("could not start Waku daemon supervisor")?;
         Ok(supervisor)
     }
@@ -367,9 +371,24 @@ impl DaemonSupervisor {
     /// Connect to a daemon managed on another host (or by an external local
     /// service manager). Dropping the desktop never shuts this daemon down.
     pub fn connect(address: &str, token: String) -> anyhow::Result<Self> {
-        let client = DaemonClient::connect(address, token)?;
+        let client = DaemonClient::connect(address, token.clone())?;
         let settings = read_settings(&client)?;
-        Self::from_target(DaemonTarget::Remote(client), None, None, settings)
+        let supervisor = Self::from_target(
+            DaemonTarget::Remote {
+                client,
+                address: address.to_owned(),
+                token,
+            },
+            None,
+            None,
+            settings,
+        )?;
+        let weak_inner = Arc::downgrade(&supervisor.inner);
+        std::thread::Builder::new()
+            .name("waku-remote-daemon-supervisor".into())
+            .spawn(move || monitor_daemon(weak_inner, None, false))
+            .context("could not start remote Waku daemon supervisor")?;
+        Ok(supervisor)
     }
 
     fn from_target(
@@ -486,7 +505,7 @@ impl Drop for DaemonSupervisor {
 
 fn monitor_daemon(
     weak_inner: std::sync::Weak<SupervisorInner>,
-    mut active_stamp: ExecutableStamp,
+    mut active_stamp: Option<ExecutableStamp>,
     watch_for_rebuilds: bool,
 ) {
     loop {
@@ -497,17 +516,59 @@ fn monitor_daemon(
         if !inner.running.load(Ordering::Acquire) {
             return;
         }
+        let remote_reconnect = {
+            let target = inner.target.lock();
+            match &*target {
+                DaemonTarget::Remote {
+                    client,
+                    address,
+                    token,
+                } if client.is_disconnected() => Some((
+                    client.clone(),
+                    address.clone(),
+                    token.clone(),
+                    client.last_sequences(),
+                )),
+                _ => None,
+            }
+        };
+        if let Some((disconnected, address, token, resume_from)) = remote_reconnect {
+            let _restart = inner.restart.lock();
+            let still_current = matches!(
+                &*inner.target.lock(),
+                DaemonTarget::Remote { client, .. }
+                    if client.same_connection(&disconnected) && client.is_disconnected()
+            );
+            if !still_current {
+                continue;
+            }
+            let Ok(replacement) =
+                DaemonClient::connect_with_resume(&address, token.clone(), resume_from)
+            else {
+                continue;
+            };
+            *inner.target.lock() = DaemonTarget::Remote {
+                client: replacement.clone(),
+                address,
+                token,
+            };
+            inner
+                .client_updates
+                .lock()
+                .retain(|subscriber| subscriber.send(replacement.clone()).is_ok());
+            continue;
+        }
         let process_exited = match &mut *inner.target.lock() {
             DaemonTarget::Local(process) => process.has_exited(),
             DaemonTarget::Restarting(_) => true,
-            DaemonTarget::Remote(_) => return,
+            DaemonTarget::Remote { .. } => continue,
         };
         let Some(executable) = inner.executable.as_ref() else {
             return;
         };
         let observed_stamp = ExecutableStamp::read(executable).ok();
-        let executable_changed =
-            watch_for_rebuilds && observed_stamp.is_some_and(|observed| observed != active_stamp);
+        let executable_changed = watch_for_rebuilds
+            && observed_stamp.is_some_and(|observed| Some(observed) != active_stamp);
         if !process_exited && !executable_changed {
             continue;
         }
@@ -524,7 +585,7 @@ fn monitor_daemon(
         }
         queue_settings_refresh(&inner);
         if let Some(observed_stamp) = observed_stamp {
-            active_stamp = observed_stamp;
+            active_stamp = Some(observed_stamp);
         }
         drop(_restart);
         drop(inner);
@@ -539,7 +600,7 @@ fn replace_local_daemon(
     let previous = {
         let mut target = inner.target.lock();
         match &*target {
-            DaemonTarget::Remote(_) => {
+            DaemonTarget::Remote { .. } => {
                 bail!("the connected daemon is managed outside Waku Desktop")
             }
             DaemonTarget::Restarting(_) => None,

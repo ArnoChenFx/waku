@@ -1528,6 +1528,7 @@ fn handle_driver_command(
             request_id,
             answers,
         } => driver.respond_user_input(request_id, answers),
+        Command::Goal { operation } => driver.goal(operation),
         Command::RunComputerTool { request } => {
             driver.run_computer_tool(crate::computer_use::ComputerToolRequest {
                 call_id: request.call_id,
@@ -1712,6 +1713,7 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
             }),
         ),
         DriverEvent::PlanUsageUpdated(usage) => ("planUsageUpdated", serde_json::to_value(usage)?),
+        DriverEvent::GoalUpdated(goal) => ("goalUpdated", serde_json::to_value(goal)?),
         DriverEvent::TurnFinished { success, summary } => (
             "turnFinished",
             json!({ "success": success, "summary": summary }),
@@ -1792,6 +1794,7 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
             }
         }
         "planUsageUpdated" => DriverEvent::PlanUsageUpdated(serde_json::from_value(payload)?),
+        "goalUpdated" => DriverEvent::GoalUpdated(serde_json::from_value(payload)?),
         "turnFinished" => {
             let finished: TurnFinishedWire = serde_json::from_value(payload)?;
             DriverEvent::TurnFinished {

@@ -200,7 +200,12 @@ export function Transcript({
     return () => resizeObserver.disconnect()
   }, [])
 
-  const empty = session.messages.length === 0 && session.transcript_blocks.length === 0
+  // Turns count as content even before any message or block exists: a
+  // provider-initiated turn (Codex goal continuation) reasons for a while
+  // before its first delta.
+  const empty = session.messages.length === 0
+    && session.transcript_blocks.length === 0
+    && session.turns.length === 0
   return (
     <TranscriptLinkContext.Provider value={onOpenLink ?? (() => false)}>
       <div className="relative min-h-0 flex-1" ref={root}>

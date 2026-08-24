@@ -411,6 +411,7 @@ mode.auto_accept_edits: 編集を自動承認
 mode.auto: 自動
 mode.full_access: フルアクセス
 mode.plan_description: 変更を加えずに調査してプランを作成します
+mode.plan_not_supported: このエージェントはプランモードに対応していません
 mode.supervised_description: コマンドの実行とファイル変更の前に確認します
 mode.auto_accept_edits_description: 編集は自動承認し、その他の操作は事前に確認します
 mode.auto_description: 通常の操作は AI レビュアーが承認し、リスクのある操作は事前に確認します
@@ -545,19 +546,34 @@ skills.section_user_skills: ユーザースキル
 skills.enable_named: "%{name} を有効にする"
 skills.disable_named: "%{name} を無効にする"
 
-commands.init_description: このプロジェクトの %{instructions_file} を作成または更新
-commands.review_description: このブランチの保留中の変更をレビュー
-commands.commit_description: 現在の変更をステージしてコミット
 commands.fast_description: 高速モードを切り替え
 commands.fast_enabled: 高速モードを有効にしました
 commands.fast_disabled: 高速モードを無効にしました
-commands.claude_compact: 会話を要約してコンテキストを空ける
-commands.claude_context: コンテキストウインドウの使用状況を表示
-commands.claude_cost: このセッションのトークン使用量とコストを表示
-commands.claude_init: プロジェクトを分析して CLAUDE.md を作成
-commands.claude_review: プルリクエストをレビュー
-commands.claude_security_review: 保留中の変更をセキュリティレビュー
-
+commands.goal_description: このタスクが継続して追求するゴールを設定
+goal.title: ゴール
+goal.objective_placeholder: このタスクは何を目指し続けるべきですか？
+goal.set: ゴールを設定
+goal.save: ゴールを保存
+goal.replace: ゴールを置き換え
+goal.replace_notice: 保存すると現在のゴールを置き換え、進捗をやり直します。
+goal.pause: ゴールを一時停止
+goal.resume: ゴールを再開
+goal.clear: ゴールをクリア
+goal.status_active: 進行中
+goal.status_paused: 一時停止中
+goal.status_stalled: 停滞中
+goal.status_usage_limited: 使用量上限
+goal.status_budget_limited: 予算切れ
+goal.status_complete: 完了
+goal.chip_active: ゴールを追求中
+goal.chip_paused: ゴール一時停止中
+goal.chip_stalled: ゴール停滞中
+goal.chip_usage_limited: ゴールが使用量上限に到達
+goal.chip_budget_limited: ゴール未達
+goal.chip_complete: ゴール達成
+goal.set_notice: "ゴールを設定: %{objective}"
+goal.usage_tokens: "%{used} / %{budget} トークン"
+goal.usage_tokens_unbudgeted: "%{used} トークン"
 composer.edit_in_composer: 入力欄で編集
 composer.steer: 指示を追加
 composer.remove_followup: キューから削除
@@ -578,6 +594,7 @@ composer.stop_confirm: もう一度 Escape を押すと停止します
 composer.steer_current: 現在のターンに指示を追加
 composer.starting_agent: エージェントを起動中…
 composer.suggestions: 入力候補
+composer.loading_suggestions: 入力候補を読み込み中…
 composer.remove_attachment: "%{name} を削除"
 composer.queued_message_actions: フォローアップの操作
 
@@ -682,6 +699,7 @@ errors.answer_provider_question: "%{provider} の質問に回答できません�
 errors.initialize_codex_app_server: Codex app-server を初期化できませんでした
 errors.register_computer_use_skill: Waku のコンピュータ操作スキルを Codex に登録できませんでした
 errors.codex_thread_open_incomplete: Codex はスレッドを開く処理を完了しませんでした
+errors.codex_goals_unsupported: このバージョンの Codex はスレッドゴールに対応していません
 errors.provider_receive_prompt: "%{provider} はプロンプトを受信できませんでした"
 errors.provider_start_turn: "%{provider} はターンを開始できませんでした"
 errors.provider_rejected_steer: "%{provider} が追加の指示を拒否しました：%{error}"

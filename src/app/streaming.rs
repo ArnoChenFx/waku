@@ -272,11 +272,23 @@ impl Waku {
             }
             DriverEvent::TurnStarted => {
                 runtime.last_driver_error = None;
-                if let Some(session) = self.state.session_mut(session_id)
-                    && session.active_turn_id().is_some()
-                {
-                    session.mark_active_turn_provider_started();
-                    session.status = SessionStatus::Working;
+                if let Some(session) = self.state.session_mut(session_id) {
+                    if session.active_turn_id().is_some() {
+                        // Covers submissions and the optimistic pursuit turn
+                        // a `/goal` began: the provider's start confirms it.
+                        session.mark_active_turn_provider_started();
+                        session.status = SessionStatus::Working;
+                    } else if session.provider == ProviderKind::Codex {
+                        // Codex starts turns on its own: goal continuation
+                        // pursues an active goal whenever the thread is
+                        // idle. Give the turn a transcript home — there is
+                        // no user message for it — so its work streams in
+                        // instead of being dropped.
+                        session.begin_provider_turn();
+                        session.mark_active_turn_provider_started();
+                        session.status = SessionStatus::Working;
+                        self.state.mark_session_dirty(session_id);
+                    }
                 }
             }
             DriverEvent::TextDelta(delta) => {
@@ -449,6 +461,28 @@ impl Waku {
                     self.plan_usage.insert(provider, usage);
                 }
             }
+            DriverEvent::GoalUpdated(goal) => {
+                // Conversation meta like usage: it applies regardless of turn
+                // state, and `None` means the provider cleared the goal.
+                if goal.is_some() {
+                    self.goal_observed_at.insert(session_id, Instant::now());
+                } else {
+                    self.goal_observed_at.remove(&session_id);
+                }
+                if let Some(session) = self.state.session_mut(session_id) {
+                    if let Some(goal) = &goal
+                        && session.messages.is_empty()
+                    {
+                        // A goal-first task is named after its objective
+                        // until the provider reports a better title.
+                        session.set_title_from_prompt(&goal.objective);
+                    }
+                    if session.thread_goal != goal {
+                        session.thread_goal = goal;
+                        self.state.mark_session_dirty(session_id);
+                    }
+                }
+            }
             DriverEvent::UsageUpdated {
                 context_tokens,
                 context_window,
@@ -591,6 +625,11 @@ impl Waku {
                 if self.state.selected_session == Some(session_id) {
                     self.show_toast(error.clone());
                 }
+                // An optimistic pursuit turn has no submission to fail with.
+                // Unwind it so the error cannot strand a spinner; if the
+                // pursuit does start later, its own start report recreates
+                // the turn.
+                self.unwind_unconfirmed_pursuit_turn(session_id);
                 let has_active_turn = self
                     .state
                     .sessions

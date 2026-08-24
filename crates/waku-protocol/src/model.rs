@@ -797,6 +797,64 @@ pub struct ContextUsage {
     pub window: Option<u64>,
 }
 
+/// Where Codex stands on a thread goal. Mirrors the app-server's
+/// `ThreadGoalStatus` vocabulary; the serialized names are Codex's own so a
+/// status can round-trip through `thread/goal/set` unchanged.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadGoalStatus {
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
+}
+
+impl ThreadGoalStatus {
+    /// Whether the goal is still being pursued or can be resumed. Complete
+    /// and budget-limited goals are terminal: replacing them starts fresh
+    /// accounting instead of continuing the old ledger.
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::BudgetLimited)
+    }
+}
+
+/// A provider-persisted objective the agent keeps pursuing across turns.
+/// Field names follow the Codex app-server payload so its `goal` objects
+/// deserialize directly.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadGoal {
+    pub objective: String,
+    pub status: ThreadGoalStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<i64>,
+    #[serde(default)]
+    pub tokens_used: i64,
+    #[serde(default)]
+    pub time_used_seconds: i64,
+}
+
+/// A goal mutation the client asks the provider runtime to perform. Results
+/// come back asynchronously as [`DriverEvent::GoalUpdated`]; failures surface
+/// through [`DriverEvent::Error`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GoalOperation {
+    /// Re-read the provider's current goal without changing it.
+    Refresh,
+    /// Create or update the goal. `None` fields keep their provider-side
+    /// value; `replace` clears the existing goal first so a new objective
+    /// starts with fresh token and time accounting.
+    Set {
+        objective: Option<String>,
+        status: Option<ThreadGoalStatus>,
+        replace: bool,
+    },
+    Clear,
+}
+
 /// Last daemon event incorporated into a session's persisted projection.
 ///
 /// The daemon runtime and its replay journal can outlive any particular
@@ -858,6 +916,11 @@ pub struct AgentSession {
     /// handshake.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_commands: Vec<ReportedCommand>,
+    /// The provider-persisted goal for this session's thread, kept so a
+    /// resumed session shows its goal before the runtime reconnects.
+    /// Currently populated by Codex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_goal: Option<ThreadGoal>,
     /// Context-window occupancy from the live stream, kept so a resumed
     /// session's meter starts where the conversation left off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -919,6 +982,7 @@ impl AgentSession {
             detail_loaded: true,
             provider_cursor: None,
             available_commands: Vec::new(),
+            thread_goal: None,
             context_usage: None,
             runtime_event_cursor: None,
             provider_session_id: None,
@@ -955,6 +1019,7 @@ impl AgentSession {
             last_reply_at: self.last_reply_at,
             provider_cursor: None,
             available_commands: Vec::new(),
+            thread_goal: None,
             context_usage: None,
             runtime_event_cursor: None,
             provider_session_id: None,
@@ -1201,6 +1266,48 @@ impl AgentSession {
         );
         self.last_reply_at = Some(now);
         id
+    }
+
+    /// Begin a turn the provider runs on its own — Codex goal continuation
+    /// pursues an active goal whenever its thread is idle. There is no user
+    /// message; the turn exists so the streamed output has a transcript home.
+    /// Like a submission's turn it starts unconfirmed: the provider's own
+    /// start report marks it via [`Self::mark_active_turn_provider_started`],
+    /// and an unconfirmed one can be unwound if the pursuit never begins.
+    pub fn begin_provider_turn(&mut self) -> Uuid {
+        let id = Uuid::new_v4();
+        let now = unix_time();
+        self.turns.push(AgentTurn {
+            id,
+            turn_count: self.turns.len() + 1,
+            status: TurnStatus::Running,
+            provider_turn_started: false,
+            provider_resume_at: None,
+            started_at: now,
+            completed_at: None,
+            checkpoint: None,
+        });
+        self.last_reply_at = Some(now);
+        self.updated_at = now;
+        id
+    }
+
+    /// Whether the running turn is a provider-initiated one whose pursuit has
+    /// not been confirmed — no user message belongs to it and the provider
+    /// has not reported its start. These are the optimistic turns a `/goal`
+    /// begins, and the only turns safe to unwind on failure.
+    pub fn active_turn_is_unconfirmed_pursuit(&self) -> bool {
+        let Some(turn) = self
+            .turns
+            .last()
+            .filter(|turn| turn.status == TurnStatus::Running && !turn.provider_turn_started)
+        else {
+            return false;
+        };
+        !self
+            .messages
+            .iter()
+            .any(|message| message.turn_id == Some(turn.id))
     }
 
     pub fn active_turn_id(&self) -> Option<Uuid> {
@@ -1666,6 +1773,10 @@ pub enum DriverEvent {
     /// (Codex's `account/rateLimits/updated`). Same shape the OAuth fetcher
     /// produces for Claude, so the panel renders both identically.
     PlanUsageUpdated(crate::usage::PlanUsage),
+    /// The provider-persisted thread goal changed — set, edited, progressed,
+    /// or (`None`) cleared. Carries the whole goal so late subscribers need
+    /// no earlier event.
+    GoalUpdated(Option<ThreadGoal>),
     TurnFinished {
         success: bool,
         summary: Option<String>,

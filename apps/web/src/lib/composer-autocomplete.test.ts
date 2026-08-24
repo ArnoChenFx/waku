@@ -7,6 +7,7 @@ import {
   expandedComposerSubmission,
   isFastModeToggleSubmission,
   mergeComposerCommands,
+  parseGoalSubmission,
   replaceComposerTrigger,
   toggledFastServiceTier,
 } from './composer-autocomplete'
@@ -121,3 +122,39 @@ function command(
 ): SlashCommand {
   return { name, scope, description, template, argument_hint: null }
 }
+
+describe('parseGoalSubmission', () => {
+  const builtin: SlashCommand = {
+    name: 'goal',
+    description: '',
+    scope: 'Builtin',
+    argument_hint: null,
+    template: null,
+  }
+
+  test('parses each goal intent', () => {
+    const parse = (prompt: string) => parseGoalSubmission('codex', prompt, [builtin])
+    expect(parse('/goal')).toEqual({ kind: 'show' })
+    expect(parse('/goal ')).toEqual({ kind: 'show' })
+    expect(parse('/goal edit')).toEqual({ kind: 'edit' })
+    expect(parse('/goal pause')).toEqual({ kind: 'pause' })
+    expect(parse('/goal resume')).toEqual({ kind: 'resume' })
+    expect(parse('/goal clear')).toEqual({ kind: 'clear' })
+    expect(parse('/goal improve benchmark coverage')).toEqual({
+      kind: 'set',
+      objective: 'improve benchmark coverage',
+    })
+    expect(parse('/goals')).toBeNull()
+    expect(parse('ship /goal')).toBeNull()
+  })
+
+  test('is codex-only and respects command overrides', () => {
+    expect(parseGoalSubmission('claude', '/goal', [builtin])).toBeNull()
+    const projectOwned: SlashCommand = {
+      ...builtin,
+      scope: 'Project',
+      template: 'do project things',
+    }
+    expect(parseGoalSubmission('codex', '/goal', [projectOwned])).toBeNull()
+  })
+})

@@ -1062,31 +1062,63 @@ skills.enable_named:
 skills.disable_named:
   en: Disable %{name}
 
-commands.init_description:
-  en: Create or update %{instructions_file} for this project
-commands.review_description:
-  en: Review the pending changes on this branch
-commands.commit_description:
-  en: Stage and commit the current changes
 commands.fast_description:
   en: Toggle fast mode
 commands.fast_enabled:
   en: Fast mode enabled
 commands.fast_disabled:
   en: Fast mode disabled
-commands.claude_compact:
-  en: Free up context by summarizing the conversation
-commands.claude_context:
-  en: Show what is occupying the context window
-commands.claude_cost:
-  en: Show token usage and cost for this session
-commands.claude_init:
-  en: Analyze the project and write CLAUDE.md
-commands.claude_review:
-  en: Review a pull request
-commands.claude_security_review:
-  en: Security review of the pending changes
+commands.goal_description:
+  en: Set a goal this task keeps pursuing
 
+goal.title:
+  en: Goal
+goal.objective_placeholder:
+  en: What should this task keep working toward?
+goal.set:
+  en: Set goal
+goal.save:
+  en: Save goal
+goal.replace:
+  en: Replace goal
+goal.replace_notice:
+  en: Saving replaces the current goal and restarts its progress.
+goal.pause:
+  en: Pause goal
+goal.resume:
+  en: Resume goal
+goal.clear:
+  en: Clear goal
+goal.status_active:
+  en: Active
+goal.status_paused:
+  en: Paused
+goal.status_stalled:
+  en: Stalled
+goal.status_usage_limited:
+  en: Usage limited
+goal.status_budget_limited:
+  en: Budget exhausted
+goal.status_complete:
+  en: Complete
+goal.chip_active:
+  en: Pursuing goal
+goal.chip_paused:
+  en: Goal paused
+goal.chip_stalled:
+  en: Goal stalled
+goal.chip_usage_limited:
+  en: Goal hit usage limits
+goal.chip_budget_limited:
+  en: Goal unmet
+goal.chip_complete:
+  en: Goal achieved
+goal.set_notice:
+  en: "Set goal: %{objective}"
+goal.usage_tokens:
+  en: "%{used} / %{budget} tokens"
+goal.usage_tokens_unbudgeted:
+  en: "%{used} tokens"
 composer.edit_in_composer:
   en: Edit in composer
 composer.steer:
@@ -1129,6 +1161,8 @@ composer.starting_agent:
   en: Starting agent…
 composer.suggestions:
   en: Composer suggestions
+composer.loading_suggestions:
+  en: Loading suggestions…
 composer.remove_attachment:
   en: Remove %{name}
 
@@ -1329,6 +1363,8 @@ errors.register_computer_use_skill:
   en: Failed to register Waku Computer Use skill with Codex
 errors.codex_thread_open_incomplete:
   en: Codex did not finish opening its thread
+errors.codex_goals_unsupported:
+  en: This Codex version does not support thread goals
 errors.provider_receive_prompt:
   en: "%{provider} could not receive the prompt"
 errors.provider_start_turn:

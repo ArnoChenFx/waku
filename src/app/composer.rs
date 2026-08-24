@@ -1872,6 +1872,52 @@ impl Waku {
             .into_any_element()
     }
 
+    /// The thread-goal chip: present only while the provider reports a goal,
+    /// it pairs a target icon with the status phrase (and budget consumption)
+    /// and opens the goal dialog. `/goal` is the keyboard route to the same
+    /// surface.
+    pub(super) fn render_goal_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let session = self.selected_session()?;
+        let goal = session.thread_goal.as_ref()?;
+        let session_id = session.id;
+        let theme = Theme::current(cx);
+        let color = super::goal_dialog::goal_status_color(goal.status, &theme);
+        // Elapsed pursuit time accrues only while a turn actually runs,
+        // matching how the provider accounts it.
+        let live_elapsed_seconds = (goal.status == crate::model::ThreadGoalStatus::Active
+            && session.is_busy())
+        .then(|| self.goal_observed_at.get(&session_id))
+        .flatten()
+        .map_or(0, |observed| observed.elapsed().as_secs() as i64);
+        let label = super::goal_dialog::goal_chip_label(goal, live_elapsed_seconds);
+        let objective = goal.objective.clone();
+        let weak = cx.entity().downgrade();
+        Some(
+            div()
+                .id("composer-goal")
+                .h(px(24.0))
+                .px(px(7.0))
+                .rounded(px(6.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .cursor_default()
+                .text_size(sp(12.5))
+                .line_height(sp(14.0))
+                .text_color(color)
+                .child(icon("icons/target.svg", 10.5, color))
+                .child(div().max_w(px(220.0)).truncate().child(label))
+                .hover(|element| element.bg(theme.overlay))
+                .tooltip(Tooltip::text(objective))
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.request_goal_dialog(session_id, None, false, cx);
+                    });
+                })
+                .into_any_element(),
+        )
+    }
+
     /// Stage files dropped onto the composer as attachment chips. The mention
     /// each chip will submit takes the autocomplete's form: relative to the
     /// project root when the file is inside it, absolute otherwise,
@@ -2135,6 +2181,79 @@ impl Waku {
         prompt: &str,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.execute_fast_mode_toggle(prompt, cx) || self.execute_goal_composer_command(prompt, cx)
+    }
+
+    /// Bridge Codex's native `/goal` command without starting a turn. Reads run
+    /// against the session's cached goal; mutations go to the app-server and
+    /// echo back as `GoalUpdated` events.
+    fn execute_goal_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
+        use crate::composer_complete::GoalCommand;
+        use crate::model::{GoalOperation, ThreadGoalStatus};
+        let Some((session_id, command, current_goal)) = self.selected_session().and_then(|session| {
+            let command = crate::composer_complete::parse_goal_submission(
+                session.provider,
+                prompt,
+                &self.slash_command_index,
+            )?;
+            Some((session.id, command, session.thread_goal.clone()))
+        }) else {
+            return false;
+        };
+        match command {
+            GoalCommand::Show | GoalCommand::Edit => {
+                self.request_goal_dialog(session_id, None, false, cx);
+            }
+            GoalCommand::Pause => {
+                self.dispatch_goal_operation(
+                    session_id,
+                    GoalOperation::Set {
+                        objective: None,
+                        status: Some(ThreadGoalStatus::Paused),
+                        replace: false,
+                    },
+                    cx,
+                );
+            }
+            GoalCommand::Resume => {
+                self.dispatch_goal_operation(
+                    session_id,
+                    GoalOperation::Set {
+                        objective: None,
+                        status: Some(ThreadGoalStatus::Active),
+                        replace: false,
+                    },
+                    cx,
+                );
+            }
+            GoalCommand::Clear => {
+                self.dispatch_goal_operation(session_id, GoalOperation::Clear, cx);
+            }
+            GoalCommand::Set(objective) => match &current_goal {
+                // Replacing unfinished work needs a look at what it replaces;
+                // the dialog carries the confirmation.
+                Some(goal) if !goal.status.is_terminal() => {
+                    self.request_goal_dialog(session_id, Some(objective), true, cx);
+                }
+                Some(_) | None => {
+                    self.dispatch_goal_operation(
+                        session_id,
+                        GoalOperation::Set {
+                            objective: Some(objective),
+                            status: Some(ThreadGoalStatus::Active),
+                            replace: current_goal.is_some(),
+                        },
+                        cx,
+                    );
+                }
+            },
+        }
+        self.composer.update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+        true
+    }
+
+    fn execute_fast_mode_toggle(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
         let Some(next_tier) = self.selected_session().and_then(|session| {
             if !crate::composer_complete::is_fast_mode_toggle_submission(
                 session.provider,
@@ -2586,8 +2705,12 @@ impl Waku {
         // `enter` cannot slip past a disabled control.
         let no_providers = self.model_picker_has_no_providers();
         let can_send = has_draft && !no_providers;
-        let autocomplete = self.render_composer_autocomplete(window, cx);
-        let autocomplete_open = autocomplete.is_some();
+        let (autocomplete, autocomplete_actionable) =
+            match self.render_composer_autocomplete(window, cx) {
+                Some((element, actionable)) => (Some(element), actionable),
+                None => (None, false),
+            };
+        let autocomplete_loading = autocomplete.is_some() && !autocomplete_actionable;
         // Files dragged in from the OS light the card up as a drop target and
         // stage as attachment chips. The wash arrives pre-blended because a
         // drag-over refinement replaces the card's fill rather than
@@ -2618,11 +2741,11 @@ impl Waku {
                 .child(super::autocomplete::composer_card_bounds_probe(
                     self.composer_autocomplete.card_bounds_cell(),
                 ))
-                // Only while the popup is open: the key context routes the
-                // arrows, `enter`, `tab` and `escape` here as actions, out
-                // from under the focused field. When it closes, the context
-                // disappears with it and `enter` submits again.
-                .when(autocomplete_open, |card| {
+                // Only while the popup has selectable rows: the key context
+                // routes arrows, `enter`, `tab` and `escape` here as actions,
+                // out from under the focused field. The loading state takes
+                // only Escape, so it can dismiss without swallowing input.
+                .when(autocomplete_actionable, |card| {
                     card.key_context("ComposerAutocomplete")
                         .on_action(cx.listener(|this, _: &SelectNextEntry, window, cx| {
                             this.move_autocomplete_highlight("down", window, cx);
@@ -2633,6 +2756,12 @@ impl Waku {
                         .on_action(cx.listener(|this, _: &ConfirmEntry, window, cx| {
                             this.accept_autocomplete(None, window, cx);
                         }))
+                        .on_action(cx.listener(|this, _: &DismissMenu, _, cx| {
+                            this.dismiss_autocomplete(cx);
+                        }))
+                })
+                .when(autocomplete_loading, |card| {
+                    card.key_context("ComposerAutocompleteLoading")
                         .on_action(cx.listener(|this, _: &DismissMenu, _, cx| {
                             this.dismiss_autocomplete(cx);
                         }))
@@ -2656,6 +2785,7 @@ impl Waku {
                         .children(self.render_agent_preset_control(cx))
                         .child(self.render_access_control(cx))
                         .child(self.render_interaction_mode_control(cx))
+                        .children(self.render_goal_control(cx))
                         .child(div().flex_1())
                         .child(match submit_action {
                             ComposerSubmitAction::Preparing => div()

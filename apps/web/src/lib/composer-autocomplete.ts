@@ -76,6 +76,46 @@ export function isFastModeToggleSubmission(
       && command.template === null)
 }
 
+export type GoalCommand =
+  | { kind: 'show' }
+  | { kind: 'edit' }
+  | { kind: 'pause' }
+  | { kind: 'resume' }
+  | { kind: 'clear' }
+  | { kind: 'set'; objective: string }
+
+/**
+ * Parse the submitted text as Codex's native `/goal` command, which Waku
+ * bridges to `thread/goal/*`. `null` when it is not one — wrong provider,
+ * other text, or a project/user command that deliberately owns `/goal`
+ * (resolution precedence stands).
+ */
+export function parseGoalSubmission(
+  provider: ProviderKind,
+  prompt: string,
+  commands: SlashCommand[],
+): GoalCommand | null {
+  if (provider !== 'codex') return null
+  const invocation = prompt.trim()
+  if (!invocation.startsWith('/')) return null
+  const body = invocation.slice(1)
+  const split = body.match(/^(\S+)(?:\s+([\s\S]*))?$/u)
+  if (!split || split[1] !== 'goal') return null
+  const goalIsCodexBuiltin = commands.some((command) => command.name === 'goal'
+    && command.scope === 'Builtin'
+    && command.template === null)
+  if (!goalIsCodexBuiltin) return null
+  const argument = (split[2] ?? '').trim()
+  switch (argument) {
+    case '': return { kind: 'show' }
+    case 'edit': return { kind: 'edit' }
+    case 'pause': return { kind: 'pause' }
+    case 'resume': return { kind: 'resume' }
+    case 'clear': return { kind: 'clear' }
+    default: return { kind: 'set', objective: argument }
+  }
+}
+
 export function toggledFastServiceTier(
   current: string | null | undefined,
   serviceTiers: ProviderModelOption[],

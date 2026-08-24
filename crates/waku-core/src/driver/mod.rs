@@ -20,8 +20,8 @@ use crossbeam_channel::{Receiver, SendError, Sender, unbounded};
 
 use crate::computer_use::ComputerToolRequest;
 use crate::model::{
-    BackgroundWorkKey, DriverEvent, InteractionMode, ProviderKind, ProviderResumeCursor,
-    RuntimeMode, UserInputAnswer,
+    BackgroundWorkKey, DriverEvent, GoalOperation, InteractionMode, ProviderKind,
+    ProviderResumeCursor, RuntimeMode, UserInputAnswer,
 };
 
 /// Provider events remain synchronous to send from reader threads, while the
@@ -120,6 +120,12 @@ impl DriverHandle {
         self.inner.respond_user_input(request_id, answers);
     }
 
+    /// Read or mutate the provider-persisted thread goal. Outcomes arrive
+    /// asynchronously as `DriverEvent::GoalUpdated` or `DriverEvent::Error`.
+    pub fn goal(&self, operation: GoalOperation) {
+        self.inner.goal(operation);
+    }
+
     pub fn run_computer_tool(&self, request: ComputerToolRequest) {
         self.inner.run_computer_tool(request);
     }
@@ -156,6 +162,9 @@ pub trait DriverControl: Send + Sync {
     fn stop_background_work(&self, _key: BackgroundWorkKey, _control_id: String) {}
     fn respond(&self, request_id: String, option_id: String);
     fn respond_user_input(&self, _request_id: String, _answers: Vec<UserInputAnswer>) {}
+    /// Providers without persisted goals ignore the request; the UI only
+    /// offers goal controls where the provider reports one.
+    fn goal(&self, _operation: GoalOperation) {}
     fn run_computer_tool(&self, _request: ComputerToolRequest) {}
     fn reject_computer_tool(&self, _request: ComputerToolRequest, _reason: String) {}
     /// Applies changed turn options to the live session, returning whether the

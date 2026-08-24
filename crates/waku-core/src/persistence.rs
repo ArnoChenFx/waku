@@ -1515,6 +1515,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         last_reply_at: last_reply_at.map(|at| at as u64),
         provider_cursor: None,
         available_commands: Vec::new(),
+        thread_goal: None,
         context_usage: None,
         runtime_event_cursor: None,
         provider_session_id: None,
