@@ -560,7 +560,7 @@ struct DriverStartRequest {
     provider: ProviderKind,
     options: DriverStartOptions,
     event_wake: smol::channel::Sender<()>,
-    daemon_client: waku_client::DaemonClient,
+    daemon: waku_client::DaemonSupervisor,
 }
 
 /// A provider process that has started off-thread but is not installed into

@@ -28,7 +28,7 @@ fn start_driver(mut request: DriverStartRequest, cwd: PathBuf) -> anyhow::Result
     request.options.cwd = cwd;
     let (event_tx, events) = driver::event_channel(request.event_wake);
     let handle = driver::start_remote(
-        request.daemon_client,
+        request.daemon,
         request.session_id,
         request.provider,
         request.options,
@@ -45,10 +45,8 @@ fn attach_driver(
     let Some(session) = waku_client::persistence::hydrate_session(&daemon, session_id)? else {
         return Ok(None);
     };
-    let response =
-        daemon
-            .client()
-            .request(session_id, Uuid::nil(), waku_client::Command::AttachSession)?;
+    let client = daemon.client();
+    let response = client.request(session_id, Uuid::nil(), waku_client::Command::AttachSession)?;
     let waku_client::ResponsePayload::SessionRuntime {
         runtime_id,
         supports_steer,
@@ -61,7 +59,8 @@ fn attach_driver(
     };
     let (event_tx, events) = driver::event_channel(event_wake);
     let handle = driver::attach_remote(
-        daemon.client(),
+        daemon,
+        client,
         session_id,
         runtime_id,
         supports_steer,
@@ -2704,7 +2703,7 @@ impl Waku {
                 provider_cursor: session.provider_cursor.clone(),
             },
             event_wake: self.event_wake_tx.clone(),
-            daemon_client: self.daemon.client(),
+            daemon: self.daemon.clone(),
         })
     }
 
