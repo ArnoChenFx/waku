@@ -1183,16 +1183,77 @@ fn turn_end_summary(data: &Value, reason: Option<&str>) -> Option<String> {
         Some("max-tokens") => Some("DeepSeek Harness reached the model output limit".into()),
         Some("aborted") => Some("DeepSeek Harness turn was cancelled".into()),
         Some("blocked") => Some("DeepSeek Harness blocked the turn".into()),
-        Some("error") => Some(
+        Some("error") => Some(friendly_turn_error(
             data.pointer("/reason/error/message")
                 .and_then(Value::as_str)
-                .unwrap_or("DeepSeek Harness turn failed")
-                .to_owned(),
-        ),
+                .unwrap_or("DeepSeek Harness turn failed"),
+        )),
         Some("interrupted") => Some("DeepSeek Harness recovered an interrupted turn".into()),
         Some(other) => Some(format!("DeepSeek Harness ended the turn: {other}")),
         None => Some("DeepSeek Harness ended the turn without a reason".into()),
     }
+}
+
+fn friendly_turn_error(raw: &str) -> String {
+    // DSH 在上游 LLM 网关故障时会透传原始 HTTP 错误，例如：
+    // `500 {"type":"error","request_id":"","error":{"type":"error","message":"Internal server error"}}`
+    // 以及 `Endpoint is unavailable` 等。对这类可识别的服务端错误，
+    // 将其转化为可操作的中文提示，避免用户面对裸 500 无从下手。
+    let trimmed = raw.trim();
+    // 提取 JSON 部分后尝试解析内部 message
+    let json_start = trimmed.find('{').unwrap_or(0);
+    let json_part = if json_start > 0 && json_start < trimmed.len() {
+        &trimmed[json_start..]
+    } else {
+        trimmed
+    };
+    let inner_message = serde_json::from_str::<Value>(json_part)
+        .ok()
+        .and_then(|value| {
+            // 兼容两种形态：直接 {error:{message}} 与外层 {error:{message}}
+            value
+                .pointer("/error/message")
+                .or_else(|| value.pointer("/error/error/message"))
+                .or_else(|| value.pointer("/message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                // 若内层解析失败，尝试解析原始字符串中嵌套的 JSON 字符串
+                .or_else(|| {
+                    // raw 可能形如 `500 {...}`，已在 json_part 中；若 message 本身又是 JSON 字符串则二次解析
+                    let nested = value.get("error")?.get("message")?.as_str()?;
+                    serde_json::from_str::<Value>(nested)
+                        .ok()
+                        .and_then(|inner| inner.pointer("/error/message").and_then(Value::as_str).map(str::to_owned))
+                })
+        })
+        .unwrap_or_else(|| trimmed.to_owned());
+
+    // 针对已知的上游不可用错误，给出明确的切换模型建议
+    let lower = inner_message.to_ascii_lowercase();
+    let is_internal_500 = trimmed.starts_with("500")
+        && (inner_message.contains("Internal server error")
+            || lower.contains("internal server error"));
+    let is_endpoint_unavailable = lower.contains("endpoint is unavailable")
+        || lower.contains("upstream request failed");
+    let is_server_error = lower.contains("server_error") || lower.contains("server");
+
+    if is_internal_500 || is_endpoint_unavailable || (is_server_error && lower.contains("internal")) {
+        // 保持原始错误可供排查，同时给出中文可操作建议
+        // 推荐的可用模型基于当前 Harness 中实测可用的模型选择
+        return format!(
+            "模型服务暂时不可用（{}），请在模型选择器中切换到其他可用模型后重试，例如 deepseek-official/deepseek-v4-flash、opencode-go/deepseek-v4-flash-vision-exp 或 openrouter/stealth/ox-alpha。原始错误：{}",
+            inner_message, raw
+        );
+    }
+    // 对其他错误，尽量提取简洁的内部 message，若无则回退原文
+    if inner_message != trimmed && !inner_message.is_empty() {
+        // 去掉多余的 JSON 包裹，保留可读信息
+        if raw.contains("500") || raw.len() > 200 {
+            return format!("{}（原始错误：{}）", inner_message, raw);
+        }
+        return inner_message;
+    }
+    raw.to_owned()
 }
 
 fn prompt(

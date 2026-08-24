@@ -156,17 +156,21 @@ impl DeepSeekServer {
         // 探测随之整体失败。`--patch` 覆盖层在用户层之后应用、优先级最
         // 高，把 Waku 的 Host 钉回本地环回的临时端口，两个实例得以共存。
         let patch = waku_host_patch_path();
-        let mut host_args = vec!["--profile".to_owned(), "web".to_owned()];
+        let mut host_args = Vec::new();
         if let Some(patch) = &patch {
-            host_args.push("--patch".to_owned());
-            host_args.push(patch.to_string_lossy().into_owned());
+            // `--patch` 仅在较新的 Harness 中支持，且 `dsh web --patch` 会把 `--patch` 误判为 web 子命令的参数。
+            // 使用 `--profile web --patch` 的全局选项顺序，与 `dsh --help` 的示例一致。
+            host_args.extend([
+                "--profile".to_owned(),
+                "web".to_owned(),
+                "--patch".to_owned(),
+                patch.to_string_lossy().into_owned(),
+            ]);
+        } else {
+            // 旧版 Harness 不支持 `--patch`，退化为传统的 `dsh web` 启动，避免未知旗标导致 Host 直接退出。
+            host_args.push("web".to_owned());
         }
-        host_args.extend(["--host", "127.0.0.1", "--port", "0"].map(str::to_owned));
-        // Harness 0.1.1-rc.2 不再接受 `--no-open`：按 help 输出探测能力，
-        // 旧版直接省略该参数，避免整个启动因未知旗标而失败。
-        if web_supports_no_open(binary, dsh_home) {
-            host_args.push("--no-open".to_owned());
-        }
+        host_args.extend(["--host", "127.0.0.1", "--port", "0", "--no-open"].map(str::to_owned));
         #[cfg(unix)]
         let mut command = {
             let mut command = crate::command_env::command("/bin/sh");
@@ -443,7 +447,10 @@ fn parse_ready_port(line: &str) -> Option<u16> {
     let url = url::Url::parse(url.trim()).ok()?;
     // Host is forced to 127.0.0.1 by the Waku patch, but accept localhost/::1
     // as well so a missing or ignored patch does not turn into a silent timeout.
-    let host_ok = matches!(url.host_str(), Some("127.0.0.1") | Some("localhost") | Some("::1"));
+    let host_ok = matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    );
     (url.scheme() == "http" && host_ok)
         .then(|| url.port())
         .flatten()
@@ -470,7 +477,7 @@ fn strip_ansi(value: &str) -> String {
 /// 内容固定，已存在且一致时直接复用；写不出文件（只读文件系统之类）
 /// 返回 `None`，启动退化为不带覆盖层的参数。
 fn waku_host_patch_path() -> Option<PathBuf> {
-    const PATCH: &str = "- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n";
+    const PATCH: &str = "- id: webserver\n  config:\n    host: 127.0.0.1\n    port: 0\n- id: ui-dsh-lan-proxy\n  disabled: true\n";
     let directory = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -499,23 +506,6 @@ fn waku_host_patch_path() -> Option<PathBuf> {
         }
     }
     Some(path)
-}
-
-fn web_supports_no_open(binary: &Path, dsh_home: Option<&Path>) -> bool {
-    let mut command = crate::command_env::command(binary);
-    command.args(["web", "--help"]);
-    if let Some(dsh_home) = dsh_home {
-        command.env("DSH_HOME", dsh_home);
-    }
-    crate::command_env::output(&mut command)
-        .ok()
-        .is_some_and(|output| web_help_supports_no_open(&output.stdout))
-}
-
-fn web_help_supports_no_open(output: &[u8]) -> bool {
-    String::from_utf8_lossy(output)
-        .lines()
-        .any(|line| line.contains("--no-open"))
 }
 
 fn terminate_child(child: &mut Child, timeout: Duration) {
@@ -785,18 +775,12 @@ mod tests {
             parse_ready_port("dsh web: http://localhost:59258"),
             Some(59258)
         );
-        assert_eq!(parse_ready_port("dsh web: \u{1b}[32mhttp://127.0.0.1:59258\u{1b}[0m"), Some(59258));
+        assert_eq!(
+            parse_ready_port("dsh web: \u{1b}[32mhttp://127.0.0.1:59258\u{1b}[0m"),
+            Some(59258)
+        );
         assert_eq!(parse_ready_port("listening on 59258"), None);
         assert_eq!(parse_ready_port("dsh web: http://0.0.0.0:59258"), None);
-    }
-    #[test]
-    fn web_no_open_flag_is_capability_gated() {
-        assert!(web_help_supports_no_open(
-            b"  --no-open  do not open the Web UI in the default browser\n"
-        ));
-        assert!(!web_help_supports_no_open(
-            b"  --port <port>  listen port\n"
-        ));
     }
 
     #[test]

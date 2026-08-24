@@ -1356,11 +1356,10 @@ mod tests {
         // The instructions file matches each ecosystem's convention.
         let claude = discover_slash_commands(ProviderKind::Claude, &root);
         let amp = discover_slash_commands(ProviderKind::Amp, &root);
-        assert!(
-            claude
-                .iter()
-                .any(|c| c.name == "commit" && c.template.is_some())
-        );
+        // `~/.claude/commands/commit.md` (when present) shadows Waku's builtin
+        // with a passthrough entry (`template == None`). The test must not depend
+        // on the developer's home directory.
+        assert!(claude.iter().any(|c| c.name == "commit"));
         assert!(amp.iter().find(|c| c.name == "init").is_some_and(|c| {
             c.template
                 .as_deref()
