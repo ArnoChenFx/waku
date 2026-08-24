@@ -45,6 +45,7 @@ pub mod persistence;
 pub mod projectless;
 pub mod settings;
 pub mod skills;
+mod slash_command_catalog;
 pub mod terminal;
 pub mod theme;
 pub mod usage;

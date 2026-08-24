@@ -86,9 +86,10 @@ pub fn command_composer_text(command: &SlashCommand) -> String {
     format!("/{}", command.name)
 }
 
-/// Whether the submitted text resolves to Waku's Codex-only fast-mode
-/// toggle. Checking the resolved entry preserves project/user command
-/// precedence when one of them intentionally owns `/fast`.
+/// Whether the submitted text resolves to Codex's native fast-mode command,
+/// which Waku bridges to the provider's service-tier control. Checking the
+/// resolved entry preserves project/user command precedence when one of them
+/// intentionally owns `/fast`.
 pub fn is_fast_mode_toggle_submission(
     provider: ProviderKind,
     prompt: &str,
@@ -133,9 +134,10 @@ pub enum GoalCommand {
     Set(String),
 }
 
-/// Parse the submitted text as Waku's Codex-only `/goal` command. `None`
-/// when it is not one — wrong provider, other text, or a project/user
-/// command that deliberately owns `/goal` (resolution precedence stands).
+/// Parse the submitted text as Codex's native `/goal` command, which Waku
+/// bridges to `thread/goal/*`. `None` when it is not one — wrong provider,
+/// other text, or a project/user command that deliberately owns `/goal`
+/// (resolution precedence stands).
 pub fn parse_goal_submission(
     provider: ProviderKind,
     prompt: &str,
@@ -153,12 +155,12 @@ pub fn parse_goal_submission(
     if name != "goal" {
         return None;
     }
-    let goal_is_local_builtin = commands.iter().any(|command| {
+    let goal_is_codex_builtin = commands.iter().any(|command| {
         command.name == "goal"
             && command.scope == CommandScope::Builtin
             && command.template.is_none()
     });
-    if !goal_is_local_builtin {
+    if !goal_is_codex_builtin {
         return None;
     }
     Some(match arguments {
@@ -488,12 +490,8 @@ mod tests {
                 let skill = command(name, CommandScope::Skill);
                 let expected = format!("/skill:{name} carefully");
                 assert_eq!(
-                    resolved_skill_submission(
-                        provider,
-                        &format!("/{name} carefully"),
-                        &[skill]
-                    )
-                    .as_deref(),
+                    resolved_skill_submission(provider, &format!("/{name} carefully"), &[skill])
+                        .as_deref(),
                     Some(expected.as_str())
                 );
             }
@@ -545,11 +543,7 @@ mod tests {
         let mut project = command("goal", CommandScope::Project);
         project.template = Some("do project things".into());
         assert_eq!(
-            parse_goal_submission(
-                ProviderKind::Codex,
-                "/goal",
-                std::slice::from_ref(&project)
-            ),
+            parse_goal_submission(ProviderKind::Codex, "/goal", std::slice::from_ref(&project)),
             None
         );
     }

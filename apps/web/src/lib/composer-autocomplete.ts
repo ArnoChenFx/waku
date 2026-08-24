@@ -85,9 +85,10 @@ export type GoalCommand =
   | { kind: 'set'; objective: string }
 
 /**
- * Parse the submitted text as Waku's Codex-only `/goal` command. `null` when
- * it is not one — wrong provider, other text, or a project/user command that
- * deliberately owns `/goal` (resolution precedence stands).
+ * Parse the submitted text as Codex's native `/goal` command, which Waku
+ * bridges to `thread/goal/*`. `null` when it is not one — wrong provider,
+ * other text, or a project/user command that deliberately owns `/goal`
+ * (resolution precedence stands).
  */
 export function parseGoalSubmission(
   provider: ProviderKind,
@@ -100,10 +101,10 @@ export function parseGoalSubmission(
   const body = invocation.slice(1)
   const split = body.match(/^(\S+)(?:\s+([\s\S]*))?$/u)
   if (!split || split[1] !== 'goal') return null
-  const goalIsLocalBuiltin = commands.some((command) => command.name === 'goal'
+  const goalIsCodexBuiltin = commands.some((command) => command.name === 'goal'
     && command.scope === 'Builtin'
     && command.template === null)
-  if (!goalIsLocalBuiltin) return null
+  if (!goalIsCodexBuiltin) return null
   const argument = (split[2] ?? '').trim()
   switch (argument) {
     case '': return { kind: 'show' }

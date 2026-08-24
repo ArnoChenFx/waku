@@ -543,9 +543,6 @@ skills.section_user_skills: ユーザースキル
 skills.enable_named: "%{name} を有効にする"
 skills.disable_named: "%{name} を無効にする"
 
-commands.init_description: このプロジェクトの %{instructions_file} を作成または更新
-commands.review_description: このブランチの保留中の変更をレビュー
-commands.commit_description: 現在の変更をステージしてコミット
 commands.fast_description: 高速モードを切り替え
 commands.fast_enabled: 高速モードを有効にしました
 commands.fast_disabled: 高速モードを無効にしました
@@ -574,13 +571,6 @@ goal.chip_complete: ゴール達成
 goal.set_notice: "ゴールを設定: %{objective}"
 goal.usage_tokens: "%{used} / %{budget} トークン"
 goal.usage_tokens_unbudgeted: "%{used} トークン"
-commands.claude_compact: 会話を要約してコンテキストを空ける
-commands.claude_context: コンテキストウインドウの使用状況を表示
-commands.claude_cost: このセッションのトークン使用量とコストを表示
-commands.claude_init: プロジェクトを分析して CLAUDE.md を作成
-commands.claude_review: プルリクエストをレビュー
-commands.claude_security_review: 保留中の変更をセキュリティレビュー
-
 composer.edit_in_composer: 入力欄で編集
 composer.steer: 指示を追加
 composer.remove_followup: キューから削除
@@ -601,6 +591,7 @@ composer.stop_confirm: もう一度 Escape を押すと停止します
 composer.steer_current: 現在のターンに指示を追加
 composer.starting_agent: エージェントを起動中…
 composer.suggestions: 入力候補
+composer.loading_suggestions: 入力候補を読み込み中…
 composer.remove_attachment: "%{name} を削除"
 composer.queued_message_actions: フォローアップの操作
 

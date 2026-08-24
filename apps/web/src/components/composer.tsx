@@ -236,11 +236,17 @@ export function Composer({
         composerFiles.data ?? [],
       )
     : []
-  const autocompleteOpen = Boolean(
+  const autocompleteLoading = autocompleteTrigger?.kind === 'command'
+    ? composerCommands.isPending || composerCommands.isFetching
+    : autocompleteTrigger?.kind === 'file'
+      ? composerFiles.isPending || composerFiles.isFetching
+      : false
+  const autocompleteVisible = Boolean(
     autocompleteKey
       && autocompleteKey !== dismissedAutocomplete
-      && autocompleteRows.length,
+      && (autocompleteRows.length || autocompleteLoading),
   )
+  const autocompleteOpen = autocompleteVisible && autocompleteRows.length > 0
 
   function clearEscapeStop() {
     if (escapeStopTimer.current !== null) window.clearTimeout(escapeStopTimer.current)
@@ -390,9 +396,9 @@ export function Composer({
     void sendGoalOperation(session, operation).catch((error) => toast.error(errorMessage(error)))
   }
 
-  /** Waku's Codex-only `/goal` command, handled without starting a turn. The
-   * runtime context starts the provider itself when none is live yet, so a
-   * goal can be set before the first message — Codex CLI parity. */
+  /** Codex's native `/goal` command, bridged to app-server without starting a
+   * turn. The runtime context starts the provider itself when none is live yet,
+   * so a goal can be set before the first message. */
   function executeGoalCommand(submittedPrompt: string): boolean {
     const command = parseGoalSubmission(session.provider, submittedPrompt, availableCommands)
     if (!command) return false
@@ -569,6 +575,11 @@ export function Composer({
   }
 
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (autocompleteVisible && event.key === 'Escape') {
+      event.preventDefault()
+      setDismissedAutocomplete(autocompleteKey)
+      return
+    }
     if (autocompleteOpen) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
@@ -581,11 +592,6 @@ export function Composer({
       ) {
         event.preventDefault()
         acceptAutocomplete()
-        return
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setDismissedAutocomplete(autocompleteKey)
         return
       }
     }
@@ -685,10 +691,11 @@ export function Composer({
         />
 
         <div className="relative">
-          {autocompleteOpen && (
+          {autocompleteVisible && (
             <ComposerAutocomplete
               highlight={autocompleteHighlight}
               listRef={autocompleteList}
+              loading={autocompleteLoading && autocompleteRows.length === 0}
               rows={autocompleteRows}
               t={t}
               onAccept={acceptAutocomplete}
@@ -723,8 +730,8 @@ export function Composer({
             </div>
           )}
             <Textarea
-              aria-controls={autocompleteOpen ? 'composer-autocomplete' : undefined}
-              aria-expanded={autocompleteOpen}
+              aria-controls={autocompleteVisible ? 'composer-autocomplete' : undefined}
+              aria-expanded={autocompleteVisible}
               aria-label={t('composer.message')}
               aria-activedescendant={autocompleteOpen
                 ? `composer-autocomplete-${autocompleteHighlight}`
@@ -1131,6 +1138,7 @@ function ComposerAutocomplete({
   rows,
   highlight,
   listRef,
+  loading,
   t,
   onAccept,
   onHighlight,
@@ -1138,6 +1146,7 @@ function ComposerAutocomplete({
   rows: ComposerAutocompleteRow[]
   highlight: number
   listRef: RefObject<VirtuosoHandle | null>
+  loading: boolean
   t: Translator
   onAccept: (index: number) => void
   onHighlight: (index: number) => void
@@ -1145,41 +1154,51 @@ function ComposerAutocomplete({
   return (
     <div
       aria-label={t('composer.suggestions')}
+      aria-live={loading ? 'polite' : undefined}
       className="waku-popover-surface absolute bottom-[calc(100%+6px)] left-0 z-[70] w-full overflow-hidden rounded-[11px] p-1"
       id="composer-autocomplete"
-      role="listbox"
-      style={{ height: Math.min(302, rows.length * 30 + 8) }}
+      role={loading ? 'status' : 'listbox'}
+      style={{ height: loading ? 38 : Math.min(302, rows.length * 30 + 8) }}
     >
-      <Virtuoso
-        className="size-full outline-none"
-        computeItemKey={(_, row) => row.kind === 'command'
-          ? `command:${row.command.scope}:${row.command.name}`
-          : `file:${row.file.path}`}
-        data={rows}
-        fixedItemHeight={30}
-        increaseViewportBy={90}
-        ref={listRef}
-        itemContent={(index, row) => (
-          <button
-            aria-selected={highlight === index}
-            className={cn(
-              'flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left outline-none',
-              highlight === index ? 'bg-accent' : 'hover:bg-accent/70',
-            )}
-            id={`composer-autocomplete-${index}`}
-            role="option"
-            tabIndex={-1}
-            type="button"
-            onMouseDown={(event) => {
-              event.preventDefault()
-              onAccept(index)
-            }}
-            onMouseEnter={() => onHighlight(index)}
-          >
-            <AutocompleteRowContents row={row} />
-          </button>
-        )}
-      />
+      {loading
+        ? (
+            <div className="flex h-[30px] items-center gap-2 px-2 text-[12px] text-[var(--text-tertiary)]">
+              <WakuIcon className="size-3 motion-safe:animate-spin" name="loaderCircle" />
+              {t('composer.loading_suggestions')}
+            </div>
+          )
+        : (
+            <Virtuoso
+              className="size-full outline-none"
+              computeItemKey={(_, row) => row.kind === 'command'
+                ? `command:${row.command.scope}:${row.command.name}`
+                : `file:${row.file.path}`}
+              data={rows}
+              fixedItemHeight={30}
+              increaseViewportBy={90}
+              ref={listRef}
+              itemContent={(index, row) => (
+                <button
+                  aria-selected={highlight === index}
+                  className={cn(
+                    'flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left outline-none',
+                    highlight === index ? 'bg-accent' : 'hover:bg-accent/70',
+                  )}
+                  id={`composer-autocomplete-${index}`}
+                  role="option"
+                  tabIndex={-1}
+                  type="button"
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    onAccept(index)
+                  }}
+                  onMouseEnter={() => onHighlight(index)}
+                >
+                  <AutocompleteRowContents row={row} />
+                </button>
+              )}
+            />
+          )}
     </div>
   )
 }

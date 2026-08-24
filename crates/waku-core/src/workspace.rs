@@ -69,8 +69,13 @@ pub fn execute(operation: WorkspaceOperation) -> anyhow::Result<WorkspaceResult>
         WorkspaceOperation::DiscoverSlashCommands {
             provider,
             project_root,
+            binary_override,
         } => WorkspaceResult::SlashCommands {
-            commands: crate::composer_complete::discover_slash_commands(provider, &project_root),
+            commands: crate::composer_complete::discover_slash_commands(
+                provider,
+                &project_root,
+                binary_override.as_deref(),
+            ),
         },
         WorkspaceOperation::CreateProjectlessWorkspace { prompt } => {
             WorkspaceResult::ProjectlessWorkspace {

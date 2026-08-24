@@ -514,9 +514,6 @@ skills.details: 技能详情
 skills.section_user_skills: 用户技能
 skills.enable_named: 启用%{name}
 skills.disable_named: 停用%{name}
-commands.init_description: 为此项目创建或更新 %{instructions_file}
-commands.review_description: 审查当前分支中尚未合并的更改
-commands.commit_description: 暂存并提交当前更改
 commands.fast_description: 切换快速模式
 commands.fast_enabled: 已启用快速模式
 commands.fast_disabled: 已关闭快速模式
@@ -545,12 +542,6 @@ goal.chip_complete: 目标已达成
 goal.set_notice: "设定目标：%{objective}"
 goal.usage_tokens: "%{used} / %{budget} 个 token"
 goal.usage_tokens_unbudgeted: "%{used} 个 token"
-commands.claude_compact: 总结对话以释放上下文空间
-commands.claude_context: 查看上下文窗口的占用情况
-commands.claude_cost: 查看当前任务的令牌用量与费用
-commands.claude_init: 分析项目并编写 CLAUDE.md
-commands.claude_review: 审查拉取请求
-commands.claude_security_review: 对尚未合并的更改进行安全审查
 composer.edit_in_composer: 在输入框中编辑
 composer.steer: 引导
 composer.remove_followup: 从队列中移除
@@ -571,6 +562,7 @@ composer.stop_confirm: 再按一次 Escape 停止
 composer.steer_current: 引导当前回合
 composer.starting_agent: 正在启动智能体…
 composer.suggestions: 输入建议
+composer.loading_suggestions: 正在加载建议…
 composer.remove_attachment: 移除 %{name}
 composer.queued_message_actions: 后续消息操作
 branches.detached_head: 游离 HEAD

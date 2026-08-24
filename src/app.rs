@@ -1229,18 +1229,20 @@ pub struct Waku {
     /// started them. Keeping the operation on the app also lets every
     /// Environment surface reflect and gate the same in-flight action.
     commit_operation: Option<commit_dialog::CommitOperationState>,
-    /// Slash commands discovered per (provider, project root). Filesystem
-    /// walks live on the background executor; frames read the index below.
-    slash_commands: QueryCache<(ProviderKind, PathBuf), Vec<SlashCommand>>,
+    /// Slash commands discovered per (provider, project root, CLI override).
+    /// Filesystem and CLI probes live off the UI thread; frames read this cache.
+    slash_commands: QueryCache<(ProviderKind, PathBuf, Option<String>), Vec<SlashCommand>>,
     /// The merged command list the autocomplete popup draws, and the key it
     /// was built for — a stale key means "no commands", never another
     /// provider's list.
     slash_command_index: Rc<Vec<SlashCommand>>,
-    slash_command_index_key: Option<(ProviderKind, PathBuf)>,
+    slash_command_index_key: Option<(ProviderKind, PathBuf, Option<String>)>,
+    slash_command_index_loading: bool,
     /// Workspace file index per project root, for `@` mentions.
     mention_files: QueryCache<PathBuf, Vec<FileEntry>>,
     mention_file_index: Rc<Vec<FileEntry>>,
     mention_file_index_path: Option<PathBuf>,
+    mention_file_index_loading: bool,
     /// Set when a driver reports its command registry mid-drain; the drain
     /// has no `Context` to rebuild the drawn index itself.
     composer_sources_stale: bool,
@@ -2801,9 +2803,11 @@ impl Waku {
                 slash_commands: QueryCache::new(2 * MAX_CACHED_WORKSPACES),
                 slash_command_index: Rc::new(Vec::new()),
                 slash_command_index_key: None,
+                slash_command_index_loading: false,
                 mention_files: QueryCache::new(MAX_CACHED_WORKSPACES),
                 mention_file_index: Rc::new(Vec::new()),
                 mention_file_index_path: None,
+                mention_file_index_loading: false,
                 composer_sources_stale: false,
                 composer_autocomplete: autocomplete::AutocompleteUi::new(),
                 composer_attachments,

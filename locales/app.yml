@@ -1056,12 +1056,6 @@ skills.enable_named:
 skills.disable_named:
   en: Disable %{name}
 
-commands.init_description:
-  en: Create or update %{instructions_file} for this project
-commands.review_description:
-  en: Review the pending changes on this branch
-commands.commit_description:
-  en: Stage and commit the current changes
 commands.fast_description:
   en: Toggle fast mode
 commands.fast_enabled:
@@ -1119,19 +1113,6 @@ goal.usage_tokens:
   en: "%{used} / %{budget} tokens"
 goal.usage_tokens_unbudgeted:
   en: "%{used} tokens"
-commands.claude_compact:
-  en: Free up context by summarizing the conversation
-commands.claude_context:
-  en: Show what is occupying the context window
-commands.claude_cost:
-  en: Show token usage and cost for this session
-commands.claude_init:
-  en: Analyze the project and write CLAUDE.md
-commands.claude_review:
-  en: Review a pull request
-commands.claude_security_review:
-  en: Security review of the pending changes
-
 composer.edit_in_composer:
   en: Edit in composer
 composer.steer:
@@ -1174,6 +1155,8 @@ composer.starting_agent:
   en: Starting agent…
 composer.suggestions:
   en: Composer suggestions
+composer.loading_suggestions:
+  en: Loading suggestions…
 composer.remove_attachment:
   en: Remove %{name}
 

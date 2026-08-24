@@ -2184,9 +2184,9 @@ impl Waku {
         self.execute_fast_mode_toggle(prompt, cx) || self.execute_goal_composer_command(prompt, cx)
     }
 
-    /// Handle Waku's Codex-only `/goal` command without starting a turn.
-    /// Reads run against the session's cached goal; mutations go to the live
-    /// runtime and echo back as `GoalUpdated` events.
+    /// Bridge Codex's native `/goal` command without starting a turn. Reads run
+    /// against the session's cached goal; mutations go to the app-server and
+    /// echo back as `GoalUpdated` events.
     fn execute_goal_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
         use crate::composer_complete::GoalCommand;
         use crate::model::{GoalOperation, ThreadGoalStatus};
@@ -2705,8 +2705,12 @@ impl Waku {
         // `enter` cannot slip past a disabled control.
         let no_providers = self.model_picker_has_no_providers();
         let can_send = has_draft && !no_providers;
-        let autocomplete = self.render_composer_autocomplete(window, cx);
-        let autocomplete_open = autocomplete.is_some();
+        let (autocomplete, autocomplete_actionable) =
+            match self.render_composer_autocomplete(window, cx) {
+                Some((element, actionable)) => (Some(element), actionable),
+                None => (None, false),
+            };
+        let autocomplete_loading = autocomplete.is_some() && !autocomplete_actionable;
         // Files dragged in from the OS light the card up as a drop target and
         // stage as attachment chips. The wash arrives pre-blended because a
         // drag-over refinement replaces the card's fill rather than
@@ -2737,11 +2741,11 @@ impl Waku {
                 .child(super::autocomplete::composer_card_bounds_probe(
                     self.composer_autocomplete.card_bounds_cell(),
                 ))
-                // Only while the popup is open: the key context routes the
-                // arrows, `enter`, `tab` and `escape` here as actions, out
-                // from under the focused field. When it closes, the context
-                // disappears with it and `enter` submits again.
-                .when(autocomplete_open, |card| {
+                // Only while the popup has selectable rows: the key context
+                // routes arrows, `enter`, `tab` and `escape` here as actions,
+                // out from under the focused field. The loading state takes
+                // only Escape, so it can dismiss without swallowing input.
+                .when(autocomplete_actionable, |card| {
                     card.key_context("ComposerAutocomplete")
                         .on_action(cx.listener(|this, _: &SelectNextEntry, window, cx| {
                             this.move_autocomplete_highlight("down", window, cx);
@@ -2752,6 +2756,12 @@ impl Waku {
                         .on_action(cx.listener(|this, _: &ConfirmEntry, window, cx| {
                             this.accept_autocomplete(None, window, cx);
                         }))
+                        .on_action(cx.listener(|this, _: &DismissMenu, _, cx| {
+                            this.dismiss_autocomplete(cx);
+                        }))
+                })
+                .when(autocomplete_loading, |card| {
+                    card.key_context("ComposerAutocompleteLoading")
                         .on_action(cx.listener(|this, _: &DismissMenu, _, cx| {
                             this.dismiss_autocomplete(cx);
                         }))
