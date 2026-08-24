@@ -521,6 +521,27 @@ mod tests {
     }
 
     #[test]
+    fn scan_folds_block_scalar_description_frontmatter() {
+        let root = temp_root("folded-description");
+        write_skill(
+            &root,
+            "review",
+            "---\nname: review\ndescription: >-\n  Review the changed code\n  and call out risky behavior.\nallowed-tools: Read\n---\nSteps…",
+        );
+
+        let locations = vec![user_location(SkillSource::Shared, &root)];
+        let catalog = scan_skills(&locations);
+        let review = catalog.skills.iter().find(|s| s.name == "review").unwrap();
+        assert_eq!(
+            review.description,
+            "Review the changed code and call out risky behavior."
+        );
+        assert_eq!(review.allowed_tools.as_deref(), Some("Read"));
+        assert_eq!(review.body, "Steps…");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn copies_across_roots_group_into_one_entry() {
         let codex_root = temp_root("group-codex");
         let cursor_root = temp_root("group-cursor");
@@ -634,7 +655,8 @@ mod tests {
 
     #[test]
     fn every_ecosystem_root_is_listed() {
-        let projects = vec![("waku".to_owned(), PathBuf::from("/tmp/waku"))];
+        let project_root = std::env::temp_dir().join("waku-skills-project");
+        let projects = vec![("waku".to_owned(), project_root.clone())];
         let locations = skill_locations(&projects);
         // Component-wise matches: the stored separators are platform-native.
         for expected in [
@@ -661,7 +683,7 @@ mod tests {
             ".cursor/skills",
             ".pi/skills",
         ] {
-            let expected = Path::new("/tmp/waku").join(expected);
+            let expected = project_root.join(expected);
             assert!(
                 locations.iter().any(|location| location.root == expected),
                 "project root missing: {}",

@@ -93,6 +93,14 @@ fn load_remote_task_state(
     Ok(RemoteTaskStateSnapshot { projects, sessions })
 }
 
+pub(super) fn session_has_active_provider_turn(session: &AgentSession) -> bool {
+    session.is_busy()
+        && session
+            .turns
+            .last()
+            .is_some_and(|turn| turn.status == TurnStatus::Running && turn.provider_turn_started)
+}
+
 /// Merge the daemon's list-only session projection into the desktop catalog.
 ///
 /// Existing rows may already contain a hydrated transcript, so only list
@@ -994,6 +1002,7 @@ impl Waku {
             self.runtimes.remove(session_id);
             self.background_work.remove(session_id);
             self.remove_right_panel_session_state(*session_id);
+            self.task_switcher.remove(*session_id);
         }
         self.state.projects = snapshot.projects;
 
@@ -2808,8 +2817,7 @@ impl Waku {
     }
 
     pub(super) fn session_can_steer(&self, session: &AgentSession) -> bool {
-        session.is_busy()
-            && session.status != SessionStatus::Connecting
+        session_has_active_provider_turn(session)
             && self
                 .runtimes
                 .get(&session.id)
