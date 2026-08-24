@@ -321,6 +321,9 @@ impl Waku {
             .map(std::path::Path::to_path_buf);
         let was_selected = self.state.selected_session == Some(session_id);
         self.submission_preparations.remove(&session_id);
+        self.goal_runtime_starts.remove(&session_id);
+        self.pending_goal_operations.remove(&session_id);
+        self.goal_observed_at.remove(&session_id);
         self.reset_session_runtime(session_id);
         self.background_work.remove(&session_id);
         self.remove_right_panel_session_state(session_id);
@@ -1162,6 +1165,10 @@ impl Waku {
             .find(|session| session.id == session_id)
             .is_some_and(|session| retain_runtime_after_cancel(session.provider))
             || self.session_has_live_detached_work(session_id);
+        // Goal operations queued behind a starting runtime would set the
+        // objective after this stop and begin pursuing it; the user asked to
+        // stop, so they leave with the turn.
+        self.pending_goal_operations.remove(&session_id);
         let mut runtime = self.runtimes.remove(&session_id);
         if let Some(runtime) = runtime.as_ref() {
             runtime.driver.cancel();

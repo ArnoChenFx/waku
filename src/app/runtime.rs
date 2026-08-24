@@ -2707,6 +2707,169 @@ impl Waku {
         })
     }
 
+    /// Start the session's provider runtime for a goal operation, without a
+    /// prompt or a turn. Goals live on the provider thread itself, so this
+    /// mirrors the Codex CLI, whose thread starts at launch: prepare the
+    /// workspace, spawn the provider, and let the queued goal operations
+    /// drain once the runtime installs. The session stays `Idle` throughout —
+    /// no turn begins and nothing lands in the transcript.
+    pub(super) fn start_goal_runtime(&mut self, session_id: Uuid, cx: &mut Context<Self>) {
+        if self.runtimes.contains_key(&session_id)
+            || self.goal_runtime_starts.contains(&session_id)
+            || self.submission_preparations.contains(&session_id)
+        {
+            // An installed or installing runtime picks the queue up when the
+            // install path drains pending goal operations.
+            return;
+        }
+        let Some(session) = self
+            .state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            self.pending_goal_operations.remove(&session_id);
+            return;
+        };
+        let project_id = session.project_id;
+        let workspace = session.workspace.clone();
+        let next_turn_count = session.turns.len() + 1;
+        let provisional_cwd = self
+            .workspace_path_for_session(session)
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let driver_start = self.driver_start_request_for_session(session, provisional_cwd);
+        let Some(project) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .cloned()
+        else {
+            self.pending_goal_operations.remove(&session_id);
+            self.show_toast(tr!("errors.prepare_task_project_not_found"));
+            cx.notify();
+            return;
+        };
+        // A fresh worktree task names its branch after the first prompt; when
+        // the goal arrives first, the objective is that intent.
+        let naming_prompt = self
+            .pending_goal_operations
+            .get(&session_id)
+            .into_iter()
+            .flatten()
+            .rev()
+            .find_map(|operation| match operation {
+                crate::model::GoalOperation::Set {
+                    objective: Some(objective),
+                    ..
+                } => Some(objective.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| tr!("goal.title"));
+        self.goal_runtime_starts.insert(session_id);
+        cx.notify();
+        let workspace_client = waku_client::WorkspaceClient::new(self.daemon.client());
+        cx.spawn(async move |waku, cx| {
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    prepare_submission(
+                        workspace_client,
+                        project,
+                        workspace,
+                        Some(driver_start),
+                        session_id,
+                        &naming_prompt,
+                        next_turn_count,
+                    )
+                })
+                .await;
+            let _ = waku.update(cx, move |waku, cx| {
+                waku.finish_goal_runtime_start(session_id, prepared, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_goal_runtime_start(
+        &mut self,
+        session_id: Uuid,
+        prepared: anyhow::Result<PreparedSubmission>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.goal_runtime_starts.remove(&session_id) {
+            return;
+        }
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                // The goal is lost but nothing else is: messages queued
+                // behind this start resubmit through the ordinary path,
+                // which starts its own runtime.
+                self.pending_goal_operations.remove(&session_id);
+                self.unwind_unconfirmed_pursuit_turn(session_id);
+                self.show_toast(error.to_string());
+                self.drain_queued_message(session_id, cx);
+                cx.notify();
+                return;
+            }
+        };
+        let PreparedSubmission {
+            workspace,
+            checkpoint_warning: _,
+            driver,
+        } = prepared;
+        if !self
+            .state
+            .sessions
+            .iter()
+            .any(|session| session.id == session_id)
+        {
+            // The task was removed while its provider was starting.
+            self.pending_goal_operations.remove(&session_id);
+            if let Some(Ok(prepared)) = driver {
+                prepared.handle.close();
+            }
+            return;
+        }
+        let workspace_changed = self.state.session_mut(session_id).is_some_and(|session| {
+            let changed = session.workspace != workspace;
+            session.workspace = workspace;
+            changed
+        });
+        if workspace_changed && self.state.selected_session == Some(session_id) {
+            self.invalidate_workspace_queries(cx);
+            self.reload_clean_right_panel_file_editors(cx);
+            self.ensure_right_panel_terminals(cx);
+        }
+        match driver {
+            Some(Ok(prepared)) => {
+                if self.runtimes.contains_key(&session_id) {
+                    // Another path installed a runtime meanwhile; that thread
+                    // is the session's, so the goal routes there instead.
+                    prepared.handle.close();
+                    self.drain_pending_goal_operations(session_id);
+                } else {
+                    // Install drains the pending operations itself.
+                    self.install_prepared_driver(session_id, prepared);
+                }
+            }
+            None => self.drain_pending_goal_operations(session_id),
+            Some(Err(error)) => {
+                self.pending_goal_operations.remove(&session_id);
+                self.unwind_unconfirmed_pursuit_turn(session_id);
+                self.show_toast(error.to_string());
+                self.drain_queued_message(session_id, cx);
+                cx.notify();
+                return;
+            }
+        }
+        self.save();
+        self.drain_queued_message(session_id, cx);
+        cx.notify();
+    }
+
     fn install_prepared_driver(
         &mut self,
         session_id: Uuid,
@@ -2739,6 +2902,10 @@ impl Waku {
         // the runtime map. Wake once after installation so those buffered
         // events cannot be stranded behind an already-consumed edge.
         signal_event_pump(&self.event_wake_tx);
+        // Goal operations accepted while no runtime existed ride the first
+        // install, whichever path performed it. The driver applies them once
+        // its thread opens, before any queued prompt.
+        self.drain_pending_goal_operations(session_id);
         handle
     }
 
@@ -2934,6 +3101,9 @@ impl Waku {
         if session.is_busy()
             || session.queued_messages.is_empty()
             || self.ending_checkpoint_pending(session_id)
+            // Messages parked behind a goal-initiated provider start stay
+            // queued until that runtime installs.
+            || self.goal_runtime_starts.contains(&session_id)
         {
             return;
         }
@@ -2970,6 +3140,14 @@ impl Waku {
             return;
         };
         if self.ending_checkpoint_pending(session_id) {
+            self.enqueue_follow_up_submission(session_id, submission, cx);
+            self.defer_queue_drain(session_id);
+            return;
+        }
+        // A goal operation is already starting this session's provider.
+        // Queue the message so it lands on that thread — after the goal —
+        // instead of racing a second provider process into existence.
+        if self.goal_runtime_starts.contains(&session_id) {
             self.enqueue_follow_up_submission(session_id, submission, cx);
             self.defer_queue_drain(session_id);
             return;

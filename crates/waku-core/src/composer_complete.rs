@@ -143,6 +143,13 @@ fn builtin_waku_commands(provider: ProviderKind) -> Vec<SlashCommand> {
             argument_hint: None,
             template: None,
         });
+        commands.push(SlashCommand {
+            name: "goal".to_owned(),
+            description: tr!("commands.goal_description"),
+            scope: CommandScope::Builtin,
+            argument_hint: Some("[<objective>|clear|edit|pause|resume]".to_owned()),
+            template: None,
+        });
     }
     commands
 }
@@ -1383,6 +1390,28 @@ mod tests {
                 assert!(
                     fast.is_none(),
                     "{} unexpectedly offers /fast",
+                    provider.display_name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn goal_builtin_is_codex_only_and_stays_local() {
+        for provider in ProviderKind::ALL {
+            let commands = builtin_waku_commands(provider);
+            let goal = commands.iter().find(|command| command.name == "goal");
+            if provider == ProviderKind::Codex {
+                let goal = goal.expect("Codex is missing /goal");
+                assert_eq!(goal.scope, CommandScope::Builtin);
+                // No template: the client handles /goal without starting a
+                // turn, exactly like /fast.
+                assert!(goal.template.is_none());
+                assert!(goal.argument_hint.is_some());
+            } else {
+                assert!(
+                    goal.is_none(),
+                    "{} unexpectedly offers /goal",
                     provider.display_name()
                 );
             }

@@ -1211,6 +1211,20 @@ pub struct Waku {
     /// Window-modal Git commit/push UI. Its repository snapshot is filled
     /// off-thread; frames only read this in-memory value.
     commit_dialog: Option<commit_dialog::CommitDialogState>,
+    goal_dialog: Option<goal_dialog::GoalDialogState>,
+    goal_dialog_request: Option<goal_dialog::GoalDialogRequest>,
+    /// Goal operations accepted before the session's runtime exists. Goals
+    /// attach to the provider thread, not to any turn, so `/goal` on a fresh
+    /// task starts the provider and these drain once it installs.
+    pending_goal_operations: HashMap<Uuid, Vec<crate::model::GoalOperation>>,
+    /// Sessions whose runtime is being started by a goal operation rather
+    /// than a submission. Submissions queue behind this instead of racing a
+    /// second provider process into existence.
+    goal_runtime_starts: HashSet<Uuid>,
+    /// When each session's goal accounting was last reported. The chip adds
+    /// the wall clock since then while an active goal's turn runs, so elapsed
+    /// pursuit time ticks live the way the Codex CLI shows it.
+    goal_observed_at: HashMap<Uuid, Instant>,
     /// Commit-message generation and Git mutation outlive the modal that
     /// started them. Keeping the operation on the app also lets every
     /// Environment surface reflect and gate the same in-flight action.
@@ -1581,6 +1595,7 @@ mod background_work;
 mod branches;
 mod command_palette;
 mod commit_dialog;
+mod goal_dialog;
 mod components;
 mod composer;
 mod drafts;
@@ -1608,6 +1623,7 @@ use background_work::{
 };
 pub use command_palette::init as init_command_palette;
 pub use commit_dialog::init as init_commit_dialog_keys;
+pub use goal_dialog::init as init_goal_dialog_keys;
 use components::*;
 pub use image_preview::init as init_image_preview_keys;
 pub use settings::init as init_settings_keys;
@@ -2774,6 +2790,11 @@ impl Waku {
                 visible_branch_snapshot: None,
                 branch_operation_pending: false,
                 commit_dialog: None,
+                goal_dialog: None,
+                goal_dialog_request: None,
+                pending_goal_operations: HashMap::new(),
+                goal_runtime_starts: HashSet::new(),
+                goal_observed_at: HashMap::new(),
                 commit_operation: None,
                 // Providers × workspaces; both scans are small, the cache
                 // only exists to keep them off the frame path.

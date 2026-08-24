@@ -287,6 +287,10 @@ impl DriverControl for RemoteDriverControl {
         });
     }
 
+    fn goal(&self, operation: waku_protocol::model::GoalOperation) {
+        self.notify(waku_client::Command::Goal { operation });
+    }
+
     fn run_computer_tool(&self, request: ComputerToolRequest) {
         self.notify(waku_client::Command::RunComputerTool {
             request: waku_client::WireComputerToolRequest {

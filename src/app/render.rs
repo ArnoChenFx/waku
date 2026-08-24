@@ -1,8 +1,14 @@
 use super::*;
 
 fn should_render_empty_state(session: Option<&AgentSession>) -> bool {
+    // Turns count as content even before any message exists: a
+    // provider-initiated turn (Codex goal continuation) reasons for a while
+    // before its first text delta, and the transcript's working indicator —
+    // not the new-task greeting — is what represents that state.
     session
-        .map(|session| session.detail_loaded && session.messages.is_empty())
+        .map(|session| {
+            session.detail_loaded && session.messages.is_empty() && session.turns.is_empty()
+        })
         .unwrap_or(true)
 }
 
@@ -240,6 +246,7 @@ impl Render for Waku {
         if self.settings_page.is_some() {
             let command_palette = self.render_command_palette(window, cx);
             let commit_dialog = self.render_commit_dialog(cx);
+            let goal_dialog = self.render_goal_dialog(window, cx);
             let toast = self.render_active_toast(cx);
             let content = div()
                 .relative()
@@ -256,6 +263,7 @@ impl Render for Waku {
                 .children(toast)
                 .children(command_palette)
                 .children(commit_dialog)
+                .children(goal_dialog)
                 .children(image_preview)
                 .children(task_switcher)
                 .into_any_element();
@@ -271,6 +279,7 @@ impl Render for Waku {
         let computer_use = self.render_computer_use_overlay(cx);
         let command_palette = self.render_command_palette(window, cx);
         let commit_dialog = self.render_commit_dialog(cx);
+        let goal_dialog = self.render_goal_dialog(window, cx);
         let toast = self.render_active_toast(cx);
         let content = div()
             .key_context("Waku")
@@ -401,6 +410,7 @@ impl Render for Waku {
             })
             .children(command_palette)
             .children(commit_dialog)
+            .children(goal_dialog)
             .children(image_preview)
             .children(task_switcher)
             .into_any_element();

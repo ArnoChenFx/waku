@@ -4,11 +4,13 @@ import type {
   AgentSession,
   BranchSnapshot,
   ComposerDraft,
+  GoalOperation,
   MessageAttachment,
   PlanUsage,
   Project,
   ProviderModel,
   ProviderProbe,
+  ThreadGoalStatus,
 } from '@waku/client'
 import {
   useEffect,
@@ -21,6 +23,7 @@ import {
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { toast } from 'sonner'
 import { ControlMenu, type ControlMenuItem } from '@/components/control-menu'
+import { GoalDialog, goalStatusClass, goalUsageReadout } from '@/components/goal-dialog'
 import { DaemonFilePicker } from '@/components/daemon-file-picker'
 import { PreviewableImage } from '@/components/image-preview'
 import { ModelPicker } from '@/components/model-picker'
@@ -50,6 +53,7 @@ import {
   expandedComposerSubmission,
   isFastModeToggleSubmission,
   mergeComposerCommands,
+  parseGoalSubmission,
   replaceComposerTrigger,
   toggledFastServiceTier,
   type ComposerAutocompleteRow,
@@ -156,6 +160,7 @@ export function Composer({
   const queryClient = useQueryClient()
   const {
     sendPrompt,
+    sendGoalOperation,
     steerPrompt,
     cancel,
     respond,
@@ -172,6 +177,9 @@ export function Composer({
   const composerFiles = useComposerFiles(cwd)
   const composerCommands = useComposerCommands(session.provider, cwd)
   const [prompt, setPrompt] = useState(initialComposerDraft?.text ?? '')
+  const [goalDialog, setGoalDialog] = useState<{ prefill: string | null; replace: boolean } | null>(
+    null,
+  )
   const [attachments, setAttachments] = useState<MessageAttachment[]>(
     () => initialComposerDraft?.attachments ?? [],
   )
@@ -354,6 +362,17 @@ export function Composer({
   }
 
   function executeLocalComposerCommand(submittedPrompt = prompt): boolean {
+    return executeFastModeToggle(submittedPrompt) || executeGoalCommand(submittedPrompt)
+  }
+
+  function clearComposerDraft() {
+    setPrompt('')
+    setCursor(0)
+    setDismissedAutocomplete(null)
+    setAutocompleteSelection({ key: '', index: 0 })
+  }
+
+  function executeFastModeToggle(submittedPrompt: string): boolean {
     if (!isFastModeToggleSubmission(session.provider, submittedPrompt, availableCommands)) return false
     const nextTier = toggledFastServiceTier(
       session.service_tier,
@@ -361,12 +380,53 @@ export function Composer({
     )
     if (!nextTier) return false
     const enabled = nextTier !== 'default'
-    setPrompt('')
-    setCursor(0)
-    setDismissedAutocomplete(null)
-    setAutocompleteSelection({ key: '', index: 0 })
+    clearComposerDraft()
     savePatch({ service_tier: nextTier })
     toast.success(t(enabled ? 'commands.fast_enabled' : 'commands.fast_disabled'))
+    return true
+  }
+
+  function dispatchGoal(operation: GoalOperation) {
+    void sendGoalOperation(session, operation).catch((error) => toast.error(errorMessage(error)))
+  }
+
+  /** Waku's Codex-only `/goal` command, handled without starting a turn. The
+   * runtime context starts the provider itself when none is live yet, so a
+   * goal can be set before the first message — Codex CLI parity. */
+  function executeGoalCommand(submittedPrompt: string): boolean {
+    const command = parseGoalSubmission(session.provider, submittedPrompt, availableCommands)
+    if (!command) return false
+    const goal = session.thread_goal ?? null
+    switch (command.kind) {
+      case 'show':
+      case 'edit':
+        setGoalDialog({ prefill: null, replace: false })
+        break
+      case 'pause':
+        dispatchGoal({ kind: 'set', objective: null, status: 'paused', replace: false })
+        break
+      case 'resume':
+        dispatchGoal({ kind: 'set', objective: null, status: 'active', replace: false })
+        break
+      case 'clear':
+        dispatchGoal({ kind: 'clear' })
+        break
+      case 'set':
+        if (goal && goal.status !== 'complete' && goal.status !== 'budgetLimited') {
+          // Replacing unfinished work needs a look at what it replaces; the
+          // dialog carries the confirmation.
+          setGoalDialog({ prefill: command.objective, replace: true })
+        } else {
+          dispatchGoal({
+            kind: 'set',
+            objective: command.objective,
+            status: 'active',
+            replace: Boolean(goal),
+          })
+        }
+        break
+    }
+    clearComposerDraft()
     return true
   }
 
@@ -731,6 +791,11 @@ export function Composer({
             />
             <AccessControl returnFocus={composerInput} session={session} onPatch={savePatch} />
             <InteractionModeControl session={session} onPatch={savePatch} />
+            <GoalControl
+              busy={busy}
+              session={session}
+              onOpen={() => setGoalDialog({ prefill: null, replace: false })}
+            />
             <div className="flex-1" />
             <div className="flex items-center gap-2">
               {busy && (
@@ -797,6 +862,29 @@ export function Composer({
             onSelect={addDaemonFile}
           />
         )}
+        <GoalDialog
+          open={goalDialog !== null}
+          prefill={goalDialog?.prefill ?? null}
+          replace={goalDialog?.replace ?? false}
+          returnFocus={composerInput}
+          session={session}
+          onClear={() => dispatchGoal({ kind: 'clear' })}
+          onOpenChange={(open) => {
+            if (!open) setGoalDialog(null)
+          }}
+          onSetStatus={(status: ThreadGoalStatus) => dispatchGoal({
+            kind: 'set',
+            objective: null,
+            status,
+            replace: false,
+          })}
+          onSubmit={(objective, status, replace) => dispatchGoal({
+            kind: 'set',
+            objective,
+            status,
+            replace,
+          })}
+        />
 
         <div
           className="flex h-8 min-w-0 items-center gap-1 px-2 text-[11px] text-[var(--text-tertiary)]"
@@ -1201,6 +1289,70 @@ function ComposerAttachmentTile({
         <WakuIcon className="size-[9px]" name="x" />
       </button>
     </div>
+  )
+}
+
+const GOAL_CHIP_KEYS: Record<ThreadGoalStatus, string> = {
+  active: 'goal.chip_active',
+  paused: 'goal.chip_paused',
+  blocked: 'goal.chip_stalled',
+  usageLimited: 'goal.chip_usage_limited',
+  budgetLimited: 'goal.chip_budget_limited',
+  complete: 'goal.chip_complete',
+}
+
+/** The thread-goal chip: present only while the provider reports a goal, it
+ * pairs a target icon with the status phrase and consumption — token budget
+ * when one bounds the goal, elapsed pursuit time otherwise (ticking live
+ * while the task works, like the Codex CLI) — and opens the goal dialog. */
+function GoalControl({
+  session,
+  busy,
+  onOpen,
+}: {
+  session: AgentSession
+  busy: boolean
+  onOpen: () => void
+}) {
+  const { t } = useI18n()
+  const goal = session.thread_goal ?? null
+  const observedAt = useRef(Date.now())
+  const accountingKey = goal
+    ? [goal.objective, goal.status, goal.timeUsedSeconds, goal.tokensUsed].join('\u0000')
+    : ''
+  useEffect(() => {
+    observedAt.current = Date.now()
+  }, [accountingKey])
+  const ticking = Boolean(goal && goal.status === 'active' && busy && goal.tokenBudget == null)
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!ticking) return
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1_000)
+    return () => window.clearInterval(timer)
+  }, [ticking])
+  if (!goal) return null
+  const liveElapsed = goal.status === 'active' && busy
+    ? Math.floor((Date.now() - observedAt.current) / 1_000)
+    : 0
+  const phrase = t(GOAL_CHIP_KEYS[goal.status])
+  const usage = ['active', 'complete', 'budgetLimited'].includes(goal.status)
+    ? goalUsageReadout(goal, liveElapsed)
+    : null
+  return (
+    <button
+      className={cn(
+        'flex h-6 items-center gap-1.5 rounded-md px-1.5 outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring',
+        goalStatusClass(goal.status),
+      )}
+      title={goal.objective}
+      type="button"
+      onClick={onOpen}
+    >
+      <WakuIcon className="size-[11px]" name="target" />
+      <span className="max-w-[220px] truncate">
+        {usage ? `${phrase} (${usage})` : phrase}
+      </span>
+    </button>
   )
 }
 

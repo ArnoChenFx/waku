@@ -53,6 +53,7 @@ export const WAKU_ICONS = {
   star: 'i-waku-star',
   starFilled: 'i-waku-star-filled',
   stop: 'i-waku-stop',
+  target: 'i-waku-target',
   stopFilled: 'i-waku-stop-filled',
   terminal: 'i-waku-terminal',
   terminalSquare: 'i-waku-terminal-square',

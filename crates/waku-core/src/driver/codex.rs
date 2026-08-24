@@ -23,9 +23,9 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityItem, ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey,
-    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, InteractionMode, PermissionOption,
-    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
-    unix_time_millis,
+    BackgroundWorkKind, BackgroundWorkStatus, DriverEvent, GoalOperation, InteractionMode,
+    PermissionOption, ProviderResumeCursor, RuntimeMode, ThreadGoal, ThreadGoalStatus,
+    UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 const DISABLE_EXTERNAL_COMPUTER_USE_PLUGIN: &str =
@@ -60,6 +60,7 @@ enum CommandMessage {
         response: Sender<Result<String, String>>,
     },
     Options(SessionOptions),
+    Goal(GoalOperation),
     RefreshBackgroundWork,
     StopBackgroundWork {
         key: BackgroundWorkKey,
@@ -89,6 +90,31 @@ struct BackgroundRpcState {
 enum PendingBackgroundRpc {
     List,
     Stop(BackgroundWorkKey),
+}
+
+/// Waku-originated `thread/goal/*` requests awaiting their responses, plus
+/// whether this Codex build answered the initial probe with "method not
+/// found" — older app-servers have no goal API and should stay quiet.
+#[derive(Default)]
+struct GoalRpcState {
+    pending: HashMap<u64, PendingGoalRpc>,
+    unsupported: bool,
+}
+
+enum PendingGoalRpc {
+    /// `thread/goal/get`. The automatic post-connect probe is `quiet`: its
+    /// failure classifies support without surfacing an error.
+    Get {
+        quiet: bool,
+    },
+    Set,
+    Clear,
+    /// The clear half of a replace. Success chains the held set through the
+    /// writer so the new objective starts with fresh accounting.
+    ClearThenSet {
+        objective: Option<String>,
+        status: Option<ThreadGoalStatus>,
+    },
 }
 
 impl BackgroundRpcState {
@@ -261,6 +287,7 @@ impl CodexDriver {
         ));
         let pending_steers = Arc::new(Mutex::new(HashMap::<u64, String>::new()));
         let background_rpcs = Arc::new(Mutex::new(BackgroundRpcState::default()));
+        let goal_rpcs = Arc::new(Mutex::new(GoalRpcState::default()));
         let title_generation = Arc::new(Mutex::new(CodexTitleGeneration {
             enabled: provider_session_id.is_none(),
             launched: false,
@@ -274,6 +301,7 @@ impl CodexDriver {
         let writer_pending_forks = pending_forks.clone();
         let writer_pending_steers = pending_steers.clone();
         let writer_background_rpcs = background_rpcs.clone();
+        let writer_goal_rpcs = goal_rpcs.clone();
         let writer_title_generation = title_generation.clone();
         let writer_events = events.clone();
         let cwd_string = cwd.display().to_string();
@@ -582,6 +610,71 @@ impl CodexDriver {
                             service_tier = options.service_tier;
                             continue;
                         }
+                        CommandMessage::Goal(operation) => {
+                            let quiet = matches!(operation, GoalOperation::Refresh);
+                            if writer_goal_rpcs.lock().unsupported {
+                                if !quiet {
+                                    let _ = writer_events.send(DriverEvent::Error(tr!(
+                                        "errors.codex_goals_unsupported"
+                                    )));
+                                }
+                                continue;
+                            }
+                            let Some(thread_id) = wait_for_thread_id(&writer_thread_id) else {
+                                if !quiet {
+                                    let _ = writer_events.send(DriverEvent::Error(tr!(
+                                        "errors.codex_thread_open_incomplete"
+                                    )));
+                                }
+                                continue;
+                            };
+                            next_request_id += 1;
+                            let request_id = next_request_id;
+                            let (pending, message) = match operation {
+                                GoalOperation::Refresh => (
+                                    PendingGoalRpc::Get { quiet: true },
+                                    json!({
+                                        "method": "thread/goal/get",
+                                        "id": request_id,
+                                        "params": {"threadId": thread_id}
+                                    }),
+                                ),
+                                GoalOperation::Clear => (
+                                    PendingGoalRpc::Clear,
+                                    json!({
+                                        "method": "thread/goal/clear",
+                                        "id": request_id,
+                                        "params": {"threadId": thread_id}
+                                    }),
+                                ),
+                                GoalOperation::Set {
+                                    objective,
+                                    status,
+                                    replace: true,
+                                } => (
+                                    PendingGoalRpc::ClearThenSet { objective, status },
+                                    json!({
+                                        "method": "thread/goal/clear",
+                                        "id": request_id,
+                                        "params": {"threadId": thread_id}
+                                    }),
+                                ),
+                                GoalOperation::Set {
+                                    objective,
+                                    status,
+                                    replace: false,
+                                } => (
+                                    PendingGoalRpc::Set,
+                                    json!({
+                                        "method": "thread/goal/set",
+                                        "id": request_id,
+                                        "params": goal_set_params(&thread_id, objective, status)
+                                    }),
+                                ),
+                            };
+                            writer_goal_rpcs.lock().pending.insert(request_id, pending);
+                            message
+                        }
                         CommandMessage::RefreshBackgroundWork => {
                             if writer_background_rpcs.lock().unsupported {
                                 continue;
@@ -661,6 +754,7 @@ impl CodexDriver {
         let reader_pending_forks = pending_forks.clone();
         let reader_pending_steers = pending_steers.clone();
         let reader_background_rpcs = background_rpcs.clone();
+        let reader_goal_rpcs = goal_rpcs.clone();
         let reader_title_generation = title_generation;
         let reader_commands = commands.clone();
         let reader_events = events.clone();
@@ -686,6 +780,8 @@ impl CodexDriver {
                                         &reader_pending_forks,
                                         &reader_pending_steers,
                                         &reader_background_rpcs,
+                                        &reader_goal_rpcs,
+                                        &reader_commands,
                                         &reader_events,
                                         &mut stream_state,
                                     );
@@ -841,6 +937,81 @@ fn toml_string(value: &str) -> String {
     serde_json::to_string(value).expect("a filesystem path is always valid JSON")
 }
 
+/// `thread/goal/set` params. Omitted fields keep their provider-side value,
+/// so a status-only change must not resend the objective.
+fn goal_set_params(
+    thread_id: &str,
+    objective: Option<String>,
+    status: Option<ThreadGoalStatus>,
+) -> Value {
+    let mut params = json!({"threadId": thread_id});
+    if let Some(objective) = objective {
+        params["objective"] = json!(objective);
+    }
+    if let Some(status) = status
+        && let Ok(status) = serde_json::to_value(status)
+    {
+        params["status"] = status;
+    }
+    params
+}
+
+/// Parse the app-server's `goal` object. [`ThreadGoal`] mirrors its camelCase
+/// field names, and serde ignores the extras (`threadId`, timestamps).
+fn parse_thread_goal(goal: &Value) -> Option<ThreadGoal> {
+    serde_json::from_value(goal.clone()).ok()
+}
+
+fn handle_goal_response(
+    pending: PendingGoalRpc,
+    value: &Value,
+    goal_rpcs: &Mutex<GoalRpcState>,
+    commands: &Sender<CommandMessage>,
+    events: &impl DriverEventSink,
+) {
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        match pending {
+            PendingGoalRpc::Get { quiet } => {
+                // The automatic probe classifies support; an older app-server
+                // without the goal API should not toast on every connect.
+                let lowered = error.to_ascii_lowercase();
+                if lowered.contains("method not found") || lowered.contains("unsupported") {
+                    goal_rpcs.lock().unsupported = true;
+                }
+                if !quiet {
+                    let _ = events.send(DriverEvent::Error(error.to_owned()));
+                }
+            }
+            PendingGoalRpc::Set | PendingGoalRpc::Clear | PendingGoalRpc::ClearThenSet { .. } => {
+                let _ = events.send(DriverEvent::Error(error.to_owned()));
+            }
+        }
+        return;
+    }
+    match pending {
+        PendingGoalRpc::Get { .. } => {
+            let goal = value.pointer("/result/goal").and_then(parse_thread_goal);
+            let _ = events.send(DriverEvent::GoalUpdated(goal));
+        }
+        PendingGoalRpc::Set => {
+            if let Some(goal) = value.pointer("/result/goal").and_then(parse_thread_goal) {
+                let _ = events.send(DriverEvent::GoalUpdated(Some(goal)));
+            }
+        }
+        PendingGoalRpc::Clear => {
+            let _ = events.send(DriverEvent::GoalUpdated(None));
+        }
+        PendingGoalRpc::ClearThenSet { objective, status } => {
+            let _ = events.send(DriverEvent::GoalUpdated(None));
+            let _ = commands.send(CommandMessage::Goal(GoalOperation::Set {
+                objective,
+                status,
+                replace: false,
+            }));
+        }
+    }
+}
+
 impl DriverControl for CodexDriver {
     fn prompt(&self, prompt: String) {
         let _ = self.commands.send(CommandMessage::Prompt(prompt));
@@ -889,6 +1060,10 @@ impl DriverControl for CodexDriver {
             request_id,
             answers,
         });
+    }
+
+    fn goal(&self, operation: GoalOperation) {
+        let _ = self.commands.send(CommandMessage::Goal(operation));
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
@@ -1463,6 +1638,7 @@ fn codex_subagent_work(item: &Value) -> Vec<BackgroundWorkItem> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn handle_codex_message(
     value: Value,
     thread_id: &Mutex<Option<String>>,
@@ -1472,6 +1648,8 @@ fn handle_codex_message(
     pending_forks: &Mutex<HashMap<u64, Sender<Result<String, String>>>>,
     pending_steers: &Mutex<HashMap<u64, String>>,
     background_rpcs: &Mutex<BackgroundRpcState>,
+    goal_rpcs: &Mutex<GoalRpcState>,
+    commands: &Sender<CommandMessage>,
     events: &impl DriverEventSink,
     stream_state: &mut CodexStreamState,
 ) {
@@ -1479,6 +1657,14 @@ fn handle_codex_message(
     // the same numeric ID as one of Waku's earlier requests. Only messages
     // without a method are responses to Waku-originated requests.
     let is_response = value.get("method").is_none();
+    let pending_goal = is_response
+        .then(|| value.get("id").and_then(Value::as_u64))
+        .flatten()
+        .and_then(|id| goal_rpcs.lock().pending.remove(&id));
+    if let Some(pending) = pending_goal {
+        handle_goal_response(pending, &value, goal_rpcs, commands, events);
+        return;
+    }
     let pending_background = is_response
         .then(|| value.get("id").and_then(Value::as_u64))
         .flatten()
@@ -1619,6 +1805,9 @@ fn handle_codex_message(
                     thread_id: id.to_owned(),
                 }),
             });
+            // A resumed thread may carry a goal set in an earlier run; probe
+            // once so the client shows it without waiting for a notification.
+            let _ = commands.send(CommandMessage::Goal(GoalOperation::Refresh));
         } else if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
             let _ = events.send(DriverEvent::Error(error.to_owned()));
         }
@@ -1783,6 +1972,18 @@ fn handle_codex_message(
         "account/rateLimits/updated" => {
             if let Some(plan) = codex_plan_usage(params.get("rateLimits")) {
                 let _ = events.send(DriverEvent::PlanUsageUpdated(plan));
+            }
+        }
+        "thread/goal/updated" => {
+            if params.get("threadId").and_then(Value::as_str) == thread_id.lock().as_deref()
+                && let Some(goal) = params.get("goal").and_then(parse_thread_goal)
+            {
+                let _ = events.send(DriverEvent::GoalUpdated(Some(goal)));
+            }
+        }
+        "thread/goal/cleared" => {
+            if params.get("threadId").and_then(Value::as_str) == thread_id.lock().as_deref() {
+                let _ = events.send(DriverEvent::GoalUpdated(None));
             }
         }
         "error" => {
@@ -2323,6 +2524,199 @@ fn is_visible_stderr_notice(line: &str) -> bool {
 mod tests {
     use super::*;
 
+    struct GoalHarness {
+        thread_id: Mutex<Option<String>>,
+        turn_id: Mutex<Option<String>>,
+        turn_ids: Mutex<Vec<String>>,
+        rollbacks: Mutex<HashMap<u64, (usize, Sender<Result<(), String>>)>>,
+        forks: Mutex<HashMap<u64, Sender<Result<String, String>>>>,
+        steers: Mutex<HashMap<u64, String>>,
+        background: Mutex<BackgroundRpcState>,
+        goals: Mutex<GoalRpcState>,
+        commands: Sender<CommandMessage>,
+        command_rx: crossbeam_channel::Receiver<CommandMessage>,
+        events: crate::driver::DriverEventSender,
+        received: crossbeam_channel::Receiver<DriverEvent>,
+    }
+
+    impl GoalHarness {
+        fn new() -> Self {
+            let (events, received) = crate::driver::test_event_channel();
+            let (commands, command_rx) = unbounded();
+            Self {
+                thread_id: Mutex::new(Some("thread-1".to_owned())),
+                turn_id: Mutex::new(None),
+                turn_ids: Mutex::new(Vec::new()),
+                rollbacks: Mutex::new(HashMap::new()),
+                forks: Mutex::new(HashMap::new()),
+                steers: Mutex::new(HashMap::new()),
+                background: Mutex::new(BackgroundRpcState::default()),
+                goals: Mutex::new(GoalRpcState::default()),
+                commands,
+                command_rx,
+                events,
+                received,
+            }
+        }
+
+        fn handle(&self, value: Value) {
+            let mut stream_state = CodexStreamState::default();
+            handle_codex_message(
+                value,
+                &self.thread_id,
+                &self.turn_id,
+                &self.turn_ids,
+                &self.rollbacks,
+                &self.forks,
+                &self.steers,
+                &self.background,
+                &self.goals,
+                &self.commands,
+                &self.events,
+                &mut stream_state,
+            );
+        }
+    }
+
+    fn goal_json() -> Value {
+        json!({
+            "threadId": "thread-1",
+            "objective": "Improve benchmark coverage",
+            "status": "active",
+            "tokenBudget": 50000,
+            "tokensUsed": 12500,
+            "timeUsedSeconds": 90,
+            "createdAt": 1,
+            "updatedAt": 2
+        })
+    }
+
+    #[test]
+    fn goal_set_responses_become_goal_updates() {
+        let harness = GoalHarness::new();
+        harness
+            .goals
+            .lock()
+            .pending
+            .insert(42, PendingGoalRpc::Set);
+        harness.handle(json!({"id": 42, "result": {"goal": goal_json()}}));
+
+        let Ok(DriverEvent::GoalUpdated(Some(goal))) = harness.received.try_recv() else {
+            panic!("a set response must produce a goal update");
+        };
+        assert_eq!(goal.objective, "Improve benchmark coverage");
+        assert_eq!(goal.status, ThreadGoalStatus::Active);
+        assert_eq!(goal.token_budget, Some(50_000));
+        assert_eq!(goal.tokens_used, 12_500);
+    }
+
+    #[test]
+    fn goal_replace_clears_then_chains_the_set() {
+        let harness = GoalHarness::new();
+        harness.goals.lock().pending.insert(
+            7,
+            PendingGoalRpc::ClearThenSet {
+                objective: Some("New objective".into()),
+                status: Some(ThreadGoalStatus::Active),
+            },
+        );
+        harness.handle(json!({"id": 7, "result": {"cleared": true}}));
+
+        assert!(matches!(
+            harness.received.try_recv(),
+            Ok(DriverEvent::GoalUpdated(None))
+        ));
+        let Ok(CommandMessage::Goal(GoalOperation::Set {
+            objective,
+            status,
+            replace,
+        })) = harness.command_rx.try_recv()
+        else {
+            panic!("a successful clear must chain the held set");
+        };
+        assert_eq!(objective.as_deref(), Some("New objective"));
+        assert_eq!(status, Some(ThreadGoalStatus::Active));
+        assert!(!replace);
+    }
+
+    #[test]
+    fn goal_notifications_track_only_the_open_thread() {
+        let harness = GoalHarness::new();
+        harness.handle(json!({
+            "method": "thread/goal/updated",
+            "params": {"threadId": "thread-1", "turnId": null, "goal": goal_json()}
+        }));
+        assert!(matches!(
+            harness.received.try_recv(),
+            Ok(DriverEvent::GoalUpdated(Some(_)))
+        ));
+
+        harness.handle(json!({
+            "method": "thread/goal/updated",
+            "params": {"threadId": "other-thread", "turnId": null, "goal": goal_json()}
+        }));
+        assert!(harness.received.try_recv().is_err());
+
+        harness.handle(json!({
+            "method": "thread/goal/cleared",
+            "params": {"threadId": "thread-1"}
+        }));
+        assert!(matches!(
+            harness.received.try_recv(),
+            Ok(DriverEvent::GoalUpdated(None))
+        ));
+    }
+
+    #[test]
+    fn quiet_goal_probe_failure_marks_goals_unsupported_silently() {
+        let harness = GoalHarness::new();
+        harness
+            .goals
+            .lock()
+            .pending
+            .insert(9, PendingGoalRpc::Get { quiet: true });
+        harness.handle(json!({"id": 9, "error": {"code": -32601, "message": "Method not found"}}));
+
+        assert!(harness.goals.lock().unsupported);
+        assert!(harness.received.try_recv().is_err());
+    }
+
+    #[test]
+    fn user_goal_mutation_failures_surface_the_provider_error() {
+        let harness = GoalHarness::new();
+        harness
+            .goals
+            .lock()
+            .pending
+            .insert(11, PendingGoalRpc::Clear);
+        harness.handle(json!({
+            "id": 11,
+            "error": {"message": "ephemeral thread does not support goals: thread-1"}
+        }));
+
+        let Ok(DriverEvent::Error(message)) = harness.received.try_recv() else {
+            panic!("a failed clear must surface the provider error");
+        };
+        assert!(message.contains("ephemeral thread"));
+    }
+
+    #[test]
+    fn goal_set_params_omit_unchanged_fields() {
+        let params = goal_set_params("thread-1", None, Some(ThreadGoalStatus::Paused));
+        assert_eq!(params["threadId"], "thread-1");
+        assert_eq!(params["status"], "paused");
+        assert!(params.get("objective").is_none());
+
+        let params = goal_set_params(
+            "thread-1",
+            Some("Ship it".into()),
+            Some(ThreadGoalStatus::UsageLimited),
+        );
+        assert_eq!(params["objective"], "Ship it");
+        // Codex's own camelCase status vocabulary crosses the wire.
+        assert_eq!(params["status"], "usageLimited");
+    }
+
     #[test]
     fn parses_current_app_server_user_input_questions() {
         let questions = codex_user_input_questions(&json!({
@@ -2614,6 +3008,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         let (event_tx, event_rx) = unbounded();
         let mut stream_state = CodexStreamState::default();
         let mut send = |value| {
@@ -2626,6 +3022,8 @@ mod tests {
                 &pending_forks,
                 &pending_steers,
                 &background_rpcs,
+                &goal_rpcs,
+                &goal_commands,
                 &event_tx,
                 &mut stream_state,
             );
@@ -2679,6 +3077,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         let (response_tx, response_rx) = bounded(1);
         pending_rollbacks.lock().insert(42, (1, response_tx));
         let (event_tx, event_rx) = unbounded();
@@ -2693,6 +3093,8 @@ mod tests {
             &pending_forks,
             &pending_steers,
             &background_rpcs,
+            &goal_rpcs,
+            &goal_commands,
             &event_tx,
             &mut stream_state,
         );
@@ -2712,6 +3114,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         let (response_tx, response_rx) = bounded(1);
         pending_rollbacks.lock().insert(43, (1, response_tx));
         let (event_tx, event_rx) = unbounded();
@@ -2726,6 +3130,8 @@ mod tests {
             &pending_forks,
             &pending_steers,
             &background_rpcs,
+            &goal_rpcs,
+            &goal_commands,
             &event_tx,
             &mut stream_state,
         );
@@ -2747,6 +3153,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         let (response_tx, response_rx) = bounded(1);
         pending_forks.lock().insert(44, response_tx);
         let (event_tx, event_rx) = unbounded();
@@ -2761,6 +3169,8 @@ mod tests {
             &pending_forks,
             &pending_steers,
             &background_rpcs,
+            &goal_rpcs,
+            &goal_commands,
             &event_tx,
             &mut stream_state,
         );
@@ -2781,6 +3191,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         let (event_tx, event_rx) = unbounded();
         let mut stream_state = CodexStreamState::default();
 
@@ -2808,6 +3220,8 @@ mod tests {
                 &pending_forks,
                 &pending_steers,
                 &background_rpcs,
+                &goal_rpcs,
+                &goal_commands,
                 &event_tx,
                 &mut stream_state,
             );
@@ -2836,6 +3250,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         pending_steers
             .lock()
             .insert(50, "Focus on the failing tests first".to_owned());
@@ -2851,6 +3267,8 @@ mod tests {
             &pending_forks,
             &pending_steers,
             &background_rpcs,
+            &goal_rpcs,
+            &goal_commands,
             &event_tx,
             &mut stream_state,
         );
@@ -2874,6 +3292,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         pending_steers.lock().insert(51, "Steer me".to_owned());
         let (event_tx, event_rx) = unbounded();
         let mut stream_state = CodexStreamState::default();
@@ -2887,6 +3307,8 @@ mod tests {
             &pending_forks,
             &pending_steers,
             &background_rpcs,
+            &goal_rpcs,
+            &goal_commands,
             &event_tx,
             &mut stream_state,
         );
@@ -2938,6 +3360,8 @@ mod tests {
         let pending_forks = Mutex::new(HashMap::new());
         let pending_steers = Mutex::new(HashMap::new());
         let background_rpcs = Mutex::new(BackgroundRpcState::default());
+        let goal_rpcs = Mutex::new(GoalRpcState::default());
+        let (goal_commands, _goal_command_rx) = unbounded();
         background_rpcs.lock().lists.insert(70);
         let (event_tx, event_rx) = unbounded();
         let mut stream_state = CodexStreamState::default();
@@ -2959,6 +3383,8 @@ mod tests {
             &pending_forks,
             &pending_steers,
             &background_rpcs,
+            &goal_rpcs,
+            &goal_commands,
             &event_tx,
             &mut stream_state,
         );
