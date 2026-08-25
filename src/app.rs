@@ -1495,6 +1495,10 @@ pub struct Waku {
     assistant_footer_cache: RefCell<HashMap<usize, (Option<SharedString>, Option<u64>)>>,
     /// The row-kinds fingerprint `assistant_footer_cache` was built under.
     assistant_footer_fingerprint: Cell<Option<u64>>,
+    /// The response row currently under the pointer. Response footers are
+    /// separate virtual-list rows, so GPUI's ancestor-scoped `group_hover`
+    /// cannot reveal them when a sibling response row is hovered.
+    hovered_response_row: Option<(Uuid, TranscriptRowKind)>,
     /// Checkpoint-ref existence per (session, retained turn count), filled by
     /// `prefetch_checkpoint_refs` on the background executor. Rows read only
     /// this cache: resolving a ref forks a `git` subprocess, which must stay
@@ -2967,6 +2971,7 @@ impl Waku {
                 transcript_navigation_turns_fingerprint: Cell::new(None),
                 assistant_footer_cache: RefCell::new(HashMap::new()),
                 assistant_footer_fingerprint: Cell::new(None),
+                hovered_response_row: None,
                 checkpoint_ref_cache: RefCell::new(HashMap::new()),
                 checkpoint_ref_generation: Cell::new(0),
                 checkpoint_ref_prefetch: Cell::new(None),

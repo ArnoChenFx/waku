@@ -16,8 +16,15 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [0.1.15]
+
 - Codex thread goals: type /goal to set a persistent objective the task keeps pursuing — before or after the first message — with its autonomous pursuit streaming into the transcript, a status chip showing live budget or elapsed time, and a dialog to edit, pause, resume, or clear the goal (also in Waku Web)
+- Discover provider-native slash commands and skills from installed agent CLIs, including multiline YAML descriptions
 - Add reasoning effort selection for Grok
+- Reconnect remote daemon sessions automatically after connection interruptions
+- Fix Command/Ctrl+Enter steering after a provider response starts streaming
+- Fix transcript file links on Windows
+- Fix OpenCode dropping the first streamed event and hanging during cancellation on Windows
 
 ## [0.1.14]
 
