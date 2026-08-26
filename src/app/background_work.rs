@@ -1143,7 +1143,7 @@ impl Waku {
                                     .text_size(sp(12.5))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text)
-                                    .child(item.title.clone()),
+                                    .child(single_line_label(&item.title)),
                             )
                             .child(
                                 div()
@@ -1712,7 +1712,7 @@ fn render_background_summary_row(
                 } else {
                     theme.text
                 })
-                .child(item.title.clone()),
+                .child(single_line_label(&item.title)),
         )
         .children(trailing)
         .on_click(move |_, window, cx| {
@@ -1793,7 +1793,12 @@ mod tests {
             .0;
 
         assert!(row.contains(".truncate()"));
+        assert!(row.contains(".child(single_line_label(&item.title))"));
         assert!(!row.contains(".line_clamp(1)"));
+        assert_eq!(
+            single_line_label("/bin/zsh -lc 'set -euo pipefail\n  for n in one two'"),
+            "/bin/zsh -lc 'set -euo pipefail for n in one two'"
+        );
     }
 
     #[test]

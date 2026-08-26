@@ -1640,6 +1640,13 @@ use streaming::*;
 use transcript::*;
 use transcript_view::ConversationNavigationRail;
 
+/// Collapse provider- or page-supplied text into a label that cannot contain
+/// hard line breaks. GPUI's `truncate()` prevents wrapping, but explicit
+/// newlines still produce multiple visual lines.
+fn single_line_label(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Seconds until any session's time label next changes value, or `None` when
 /// no label is on the clock at all. A running turn's elapsed counter moves
 /// every second; a settled reply's "5m"/"3h"/"2d" moves only at its unit
