@@ -2181,7 +2181,21 @@ impl Waku {
         prompt: &str,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.execute_fast_mode_toggle(prompt, cx) || self.execute_goal_composer_command(prompt, cx)
+        self.execute_resume_composer_command(prompt, cx)
+            || self.execute_fast_mode_toggle(prompt, cx)
+            || self.execute_goal_composer_command(prompt, cx)
+    }
+
+    fn execute_resume_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
+        if !crate::composer_complete::is_resume_submission(prompt) {
+            return false;
+        }
+        self.composer.update(cx, |input, cx| input.clear(cx));
+        // Submission notifications already hold this entity mutably. Dispatch
+        // after that effect returns so the window action can safely re-enter
+        // Waku and move focus into the Resume picker.
+        cx.defer(|cx| cx.dispatch_action(&OpenResumePicker));
+        true
     }
 
     /// Bridge Codex's native `/goal` command without starting a turn. Reads run
@@ -2190,14 +2204,16 @@ impl Waku {
     fn execute_goal_composer_command(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
         use crate::composer_complete::GoalCommand;
         use crate::model::{GoalOperation, ThreadGoalStatus};
-        let Some((session_id, command, current_goal)) = self.selected_session().and_then(|session| {
-            let command = crate::composer_complete::parse_goal_submission(
-                session.provider,
-                prompt,
-                &self.slash_command_index,
-            )?;
-            Some((session.id, command, session.thread_goal.clone()))
-        }) else {
+        let Some((session_id, command, current_goal)) =
+            self.selected_session().and_then(|session| {
+                let command = crate::composer_complete::parse_goal_submission(
+                    session.provider,
+                    prompt,
+                    &self.slash_command_index,
+                )?;
+                Some((session.id, command, session.thread_goal.clone()))
+            })
+        else {
             return false;
         };
         match command {

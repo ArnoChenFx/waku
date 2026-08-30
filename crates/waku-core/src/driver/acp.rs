@@ -262,9 +262,7 @@ fn sdk_agent(
     };
     #[cfg(windows)]
     let (program, args) = (binary.to_owned(), launch.args);
-    let config = AcpAgentConfig::new(program)
-        .args(args)
-        .envs(environment);
+    let config = AcpAgentConfig::new(program).args(args).envs(environment);
     Ok(AcpAgent::new(config).with_debug(move |line, direction| {
         if direction != LineDirection::Stderr || line.trim().is_empty() {
             return;
@@ -275,6 +273,21 @@ fn sdk_agent(
         }
         lines.push(line.to_owned());
     }))
+}
+
+/// Builds a short-lived ACP process for session discovery or history replay.
+///
+/// Catalog work runs on the daemon request thread, never a render path. It
+/// intentionally shares the production launch contract so provider argv and
+/// environment quirks cannot drift between a resumed task and the picker that
+/// discovered it.
+pub(crate) fn catalog_agent(
+    provider: ProviderKind,
+    binary: &Path,
+    cwd: &Path,
+) -> anyhow::Result<AcpAgent> {
+    let launch = launch_for(provider, None)?;
+    sdk_agent(binary, cwd, launch, None, Arc::new(Mutex::new(Vec::new())))
 }
 
 type PermissionResponder = Responder<RequestPermissionResponse>;
@@ -1132,8 +1145,7 @@ async fn apply_model(
         // when the agent's current session capabilities or account entitlements differ.
         // The CLI's `models` list is the source of truth for the picker, so treat this
         // as non-fatal on Cursor and keep the session usable.
-        if !(provider == ProviderKind::Cursor
-            && error.to_string().contains("Invalid model value"))
+        if !(provider == ProviderKind::Cursor && error.to_string().contains("Invalid model value"))
         {
             let _ = events.send(DriverEvent::Error(tr!(
                 "errors.select_model",
@@ -1853,7 +1865,11 @@ fn extract_context_tokens(update: &Value) -> Option<u64> {
         "/data/used",
         "/content/used",
     ] {
-        if let Some(value) = update.pointer(path).and_then(Value::as_u64).filter(|v| *v > 0) {
+        if let Some(value) = update
+            .pointer(path)
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+        {
             return Some(value);
         }
     }
@@ -1887,7 +1903,11 @@ fn extract_context_window(update: &Value) -> Option<u64> {
         "/data/contextWindow",
         "/contextWindow",
     ] {
-        if let Some(value) = update.pointer(path).and_then(Value::as_u64).filter(|v| *v > 0) {
+        if let Some(value) = update
+            .pointer(path)
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+        {
             return Some(value);
         }
     }

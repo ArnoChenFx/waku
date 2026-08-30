@@ -74,7 +74,7 @@ pub fn fallback_models(provider: ProviderKind) -> Vec<ProviderModel> {
         // older CLIs selectable if model discovery is unavailable.
         ProviderKind::Cursor => {
             vec![ProviderModel::new("auto", tr!("model_option.auto")).default()]
-        },
+        }
         // Harness reports its account/configuration-specific catalog from its
         // Host. An invented fallback would make unavailable routes selectable.
         ProviderKind::DeepSeek => Vec::new(),
@@ -124,10 +124,7 @@ pub fn discover_catalog(
         // the picker aligned with the modes advertised by the current CLI.
         ProviderKind::Amp => (Vec::new(), None),
         ProviderKind::Codex => (discover_codex_models(binary, extra_args), None),
-        // Claude Code accepts model aliases and full IDs but does not expose a
-        // model inventory command. Keep this catalog aligned with the
-        // version-gated list used by T3 Code.
-        ProviderKind::Claude => (Vec::new(), None),
+        ProviderKind::Claude => (discover_claude_models(binary), None),
         ProviderKind::Cursor => (discover_cursor_models(binary, extra_args), None),
         ProviderKind::DeepSeek => discover_deepseek_catalog(binary, extra_args),
         ProviderKind::Fx => (discover_fx_models(binary, extra_args), None),
@@ -188,10 +185,7 @@ fn model_cache_path(provider: ProviderKind, extra_args: &[String]) -> PathBuf {
 /// The catalog cached by the last successful discovery, or `None` when no run
 /// has cached one or the file no longer parses. Reads the filesystem, so call
 /// it from the discovery thread, never from render.
-pub fn cached_models(
-    provider: ProviderKind,
-    extra_args: &[String],
-) -> Option<Vec<ProviderModel>> {
+pub fn cached_models(provider: ProviderKind, extra_args: &[String]) -> Option<Vec<ProviderModel>> {
     read_models_file(&model_cache_path(provider, extra_args))
 }
 
@@ -216,6 +210,89 @@ fn write_models_file(path: &Path, models: &[ProviderModel]) -> std::io::Result<(
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, serde_json::to_vec(models)?)?;
     std::fs::rename(temporary, path)
+}
+
+/// Claude Code's sessionless SDK initialization response carries the exact
+/// catalog behind `/model`. Unlike a fixed Anthropic list, it reflects account
+/// availability and role mappings supplied by tools such as CC Switch.
+fn discover_claude_models(binary: &Path) -> Vec<ProviderModel> {
+    crate::claude_metadata::initialize(binary, None, "user")
+        .map(|value| parse_claude_models(&value))
+        .unwrap_or_default()
+}
+
+fn parse_claude_models(value: &Value) -> Vec<ProviderModel> {
+    value
+        .pointer("/response/response/models")
+        .or_else(|| value.get("models"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?;
+            let resolved = entry
+                .get("resolvedModel")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty());
+            let name = entry
+                .get("displayName")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .or_else(|| resolved.map(display_name_from_slug))
+                .unwrap_or_else(|| display_name_from_slug(id));
+
+            let mut model = ProviderModel::new(id, name);
+            model.is_default =
+                id == "default" || entry.get("isDefault").and_then(Value::as_bool) == Some(true);
+            if entry.get("supportsEffort").and_then(Value::as_bool) != Some(false) {
+                model.reasoning_efforts = entry
+                    .get("supportedEffortLevels")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|effort| !effort.is_empty())
+                    .map(|effort| ProviderModelOption::new(effort, reasoning_effort_label(effort)))
+                    .collect();
+                // `ultracode` is Waku's orchestration effort. Claude accepts
+                // it wherever the provider metadata says xhigh is supported.
+                if model
+                    .reasoning_efforts
+                    .iter()
+                    .any(|option| option.id == "xhigh")
+                {
+                    model.reasoning_efforts.push(ProviderModelOption::new(
+                        "ultracode",
+                        reasoning_effort_label("ultracode"),
+                    ));
+                }
+                model.default_reasoning_effort = ["high", "medium"]
+                    .into_iter()
+                    .find(|preferred| {
+                        model
+                            .reasoning_efforts
+                            .iter()
+                            .any(|option| option.id == *preferred)
+                    })
+                    .or_else(|| {
+                        model
+                            .reasoning_efforts
+                            .first()
+                            .map(|option| option.id.as_str())
+                    })
+                    .map(str::to_owned);
+            }
+            Some(model)
+        })
+        .collect()
 }
 
 fn discover_cursor_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
@@ -427,7 +504,10 @@ fn discover_fx_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel
     let Ok(catalog) = serde_json::from_slice::<Value>(&output.stdout) else {
         return Vec::new();
     };
-    parse_fx_models(&catalog, discover_fx_default_model(binary, extra_args).as_deref())
+    parse_fx_models(
+        &catalog,
+        discover_fx_default_model(binary, extra_args).as_deref(),
+    )
 }
 
 fn discover_fx_default_model(binary: &Path, extra_args: &[String]) -> Option<String> {
@@ -582,7 +662,10 @@ fn grok_custom_models() -> HashMap<String, GrokCustomInfo> {
 
 fn format_grok_context(window: u64) -> (String, String) {
     if window % 1_000_000 == 0 {
-        (format!("{}m", window / 1_000_000), format!("{}M", window / 1_000_000))
+        (
+            format!("{}m", window / 1_000_000),
+            format!("{}M", window / 1_000_000),
+        )
     } else if window % 1000 == 0 {
         (format!("{}k", window / 1000), format!("{}K", window / 1000))
     } else {
@@ -653,7 +736,8 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
                 } else {
                     ("256k".to_owned(), "256K".to_owned())
                 };
-                model.context_windows = vec![ProviderModelOption::new(context_id.clone(), context_label)];
+                model.context_windows =
+                    vec![ProviderModelOption::new(context_id.clone(), context_label)];
                 model.default_context_window = Some(context_id);
                 Some(model)
             } else {
@@ -663,7 +747,8 @@ fn parse_grok_models(output: &str) -> Vec<ProviderModel> {
                 } else {
                     ("256k".to_owned(), "256K".to_owned())
                 };
-                model.context_windows = vec![ProviderModelOption::new(context_id.clone(), context_label)];
+                model.context_windows =
+                    vec![ProviderModelOption::new(context_id.clone(), context_label)];
                 model.default_context_window = Some(context_id);
                 Some(model)
             }
@@ -685,7 +770,10 @@ fn discover_kimi_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderMod
     let Ok(catalog) = serde_json::from_slice::<Value>(&output.stdout) else {
         return Vec::new();
     };
-    parse_kimi_models(&catalog, discover_kimi_default_model(binary, extra_args).as_deref())
+    parse_kimi_models(
+        &catalog,
+        discover_kimi_default_model(binary, extra_args).as_deref(),
+    )
 }
 
 fn discover_kimi_default_model(binary: &Path, extra_args: &[String]) -> Option<String> {
@@ -850,13 +938,9 @@ fn discover_pi_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel
 /// in compact JSON, so Oh My Pi is probed there instead. The default model
 /// and thinking level come from the settings the CLI itself honors.
 fn discover_oh_my_pi_models(binary: &Path, extra_args: &[String]) -> Vec<ProviderModel> {
-    let Some(catalog) = omp_cli_json(
-        binary,
-        extra_args,
-        &["models", "--json", "--no-extensions"],
-    )
-    .and_then(|output| serde_json::from_str::<Value>(&output).ok())
-    .and_then(|value| value.get("models").and_then(Value::as_array).cloned())
+    let Some(catalog) = omp_cli_json(binary, extra_args, &["models", "--json", "--no-extensions"])
+        .and_then(|output| serde_json::from_str::<Value>(&output).ok())
+        .and_then(|value| value.get("models").and_then(Value::as_array).cloned())
     else {
         return Vec::new();
     };
@@ -878,7 +962,12 @@ fn discover_oh_my_pi_models(binary: &Path, extra_args: &[String]) -> Vec<Provide
         &["config", "get", "defaultThinkingLevel", "--json"],
     )
     .and_then(|output| serde_json::from_str::<Value>(&output).ok())
-    .and_then(|value| value.get("value").and_then(Value::as_str).map(str::to_owned));
+    .and_then(|value| {
+        value
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
 
     catalog
         .into_iter()
@@ -950,10 +1039,10 @@ fn omp_cli_json(binary: &Path, extra_args: &[String], arguments: &[&str]) -> Opt
     command.args(extra_args);
     let command = command.args(arguments).stderr(Stdio::null());
     let output = crate::command_env::output(command).ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout)
-            .into_owned()
-    })
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn parse_pi_model_response(
@@ -1412,11 +1501,11 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn write_fake_pi(name: &str, contents: &str) -> PathBuf {
+    fn write_fake_model_cli(name: &str, contents: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
 
         let path = std::env::temp_dir().join(format!(
-            "waku-{name}-{}-pi-model-discovery.sh",
+            "waku-{name}-{}-model-discovery.sh",
             std::process::id()
         ));
         std::fs::write(&path, contents).unwrap();
@@ -1453,14 +1542,10 @@ mod tests {
     fn model_cache_paths_are_keyed_on_custom_arguments() {
         let without = model_cache_path(ProviderKind::Codex, &[]);
         let work = model_cache_path(ProviderKind::Codex, &["--profile".into(), "work".into()]);
-        let staging = model_cache_path(
-            ProviderKind::Codex,
-            &["--profile".into(), "staging".into()],
-        );
-        let work_again = model_cache_path(
-            ProviderKind::Codex,
-            &["--profile".into(), "work".into()],
-        );
+        let staging =
+            model_cache_path(ProviderKind::Codex, &["--profile".into(), "staging".into()]);
+        let work_again =
+            model_cache_path(ProviderKind::Codex, &["--profile".into(), "work".into()]);
 
         // The bare file name is kept for the common no-argument configuration
         // so existing caches stay valid; every other argument set gets its
@@ -1469,11 +1554,12 @@ mod tests {
         assert_ne!(work, without);
         assert_ne!(staging, work);
         assert_eq!(work, work_again);
-        assert!(work
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("codex-"));
+        assert!(
+            work.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("codex-")
+        );
     }
 
     #[test]
@@ -1517,6 +1603,64 @@ mod tests {
             ["low", "medium", "high", "xhigh", "max"]
         );
         assert!(efforts("claude-haiku-4-5").is_empty());
+    }
+
+    #[test]
+    fn parses_claude_initialization_models_without_repeating_resolved_ids() {
+        let models = parse_claude_models(&json!({
+            "type": "control_response",
+            "response": {"response": {"models": [
+                {
+                    "value": "default",
+                    "resolvedModel": "deepseek-v4-pro",
+                    "displayName": "DeepSeek V4 Pro",
+                    "supportsEffort": true,
+                    "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]
+                },
+                {
+                    "value": "sonnet",
+                    "resolvedModel": "claude-sonnet-5",
+                    "displayName": "Sonnet",
+                    "supportsEffort": false
+                },
+                {"value": "  ", "displayName": "ignored"}
+            ]}}
+        }));
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "default");
+        assert_eq!(models[0].name, "DeepSeek V4 Pro");
+        assert!(models[0].is_default);
+        assert_eq!(
+            models[0]
+                .reasoning_efforts
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh", "max", "ultracode"]
+        );
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(models[1].name, "Sonnet");
+        assert!(models[1].reasoning_efforts.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovers_claude_models_from_sessionless_initialization() {
+        let binary = write_fake_model_cli(
+            "claude",
+            r#"#!/bin/sh
+read -r request
+printf '%s\n' '{"type":"control_response","response":{"request_id":"waku-initialize-catalog","response":{"models":[{"value":"cc-switch-model","resolvedModel":"cc-switch-model","displayName":"CC Switch Model"}]}}}'
+"#,
+        );
+
+        let models = discover_claude_models(&binary);
+
+        let _ = std::fs::remove_file(binary);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "cc-switch-model");
+        assert_eq!(models[0].name, "CC Switch Model");
     }
 
     #[test]
@@ -1888,7 +2032,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pi_rpc_discovery_keeps_model_provider_extensions_enabled() {
-        let binary = write_fake_pi(
+        let binary = write_fake_model_cli(
             "extensions",
             r#"#!/bin/sh
 for argument in "$@"; do
