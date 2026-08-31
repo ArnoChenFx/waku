@@ -1,4 +1,5 @@
 import type { AgentSession, Checkpoint, Message } from '@waku/client';
+import { LegendList, type LegendListRef } from '@legendapp/list/react-native';
 import {
   formatMessageTime,
   formatWorkingElapsed,
@@ -10,7 +11,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -51,17 +51,31 @@ export function SessionView({ sessionId }: { sessionId: string | undefined }) {
   const [expandedFolds, setExpandedFolds] = useState<ReadonlySet<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [pinnedToBottom, setPinnedToBottom] = useState(true);
-  const [scrolledUnderHeader, setScrolledUnderHeader] = useState(false);
   const transcriptRows = useMemo(
     () => session ? buildTranscriptRows(session, expandedFolds) : [],
     [expandedFolds, session],
   );
+  const transcriptListKey = session
+    ? `${session.id}:${query.isPlaceholderData ? 'summary' : 'detail'}`
+    : `${sessionId ?? 'missing'}:${query.isPending ? 'loading' : 'missing'}`;
+  const [scrollState, setScrollState] = useState<{
+    listKey: string | null;
+    pinnedToBottom: boolean;
+    scrolledUnderHeader: boolean;
+    userHasScrolled: boolean;
+  }>({
+    listKey: null,
+    pinnedToBottom: true,
+    scrolledUnderHeader: false,
+    userHasScrolled: false,
+  });
+  const hasCurrentScrollState = scrollState.listKey === transcriptListKey;
+  const pinnedToBottom = hasCurrentScrollState ? scrollState.pinnedToBottom : true;
+  const scrolledUnderHeader = hasCurrentScrollState
+    ? scrollState.scrolledUnderHeader
+    : false;
   const running = Boolean(session && sessionBusy(session));
-  const listRef = useRef<FlatList<TranscriptRow>>(null);
-  const nearBottom = useRef(true);
-  const laidOut = useRef(false);
-  const viewportHeight = useRef(0);
+  const listRef = useRef<LegendListRef>(null);
 
   useEffect(() => {
     if (!session || daemon.phase !== 'connected') return;
@@ -73,10 +87,50 @@ export function SessionView({ sessionId }: { sessionId: string | undefined }) {
   function trackScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const pinned = contentSize.height - layoutMeasurement.height - contentOffset.y < 120;
-    nearBottom.current = pinned;
-    setPinnedToBottom((current) => current === pinned ? current : pinned);
     const under = contentOffset.y > 4;
-    setScrolledUnderHeader((current) => current === under ? current : under);
+    setScrollState((current) => {
+      const userHasScrolled = current.listKey === transcriptListKey && current.userHasScrolled;
+      const nextPinned = pinned || !userHasScrolled;
+      if (
+        current.listKey === transcriptListKey &&
+        current.pinnedToBottom === nextPinned &&
+        current.scrolledUnderHeader === under &&
+        current.userHasScrolled === userHasScrolled
+      ) {
+        return current;
+      }
+      return {
+        listKey: transcriptListKey,
+        pinnedToBottom: nextPinned,
+        scrolledUnderHeader: under,
+        userHasScrolled,
+      };
+    });
+  }
+
+  function beginTranscriptScroll() {
+    setScrollState((current) => ({
+      listKey: transcriptListKey,
+      pinnedToBottom: current.listKey === transcriptListKey
+        ? current.pinnedToBottom
+        : true,
+      scrolledUnderHeader: current.listKey === transcriptListKey
+        ? current.scrolledUnderHeader
+        : false,
+      userHasScrolled: true,
+    }));
+  }
+
+  function scrollTranscriptToBottom() {
+    setScrollState((current) => ({
+      listKey: transcriptListKey,
+      pinnedToBottom: true,
+      scrolledUnderHeader: current.listKey === transcriptListKey
+        ? current.scrolledUnderHeader
+        : false,
+      userHasScrolled: false,
+    }));
+    void listRef.current?.scrollToEnd({ animated: false });
   }
 
   function toggleFold(turnId: string) {
@@ -151,9 +205,13 @@ export function SessionView({ sessionId }: { sessionId: string | undefined }) {
         title={session ? displaySessionTitle(session) : 'Task'}
       />
       <View style={styles.listFrame}>
-        <FlatList
+        <LegendList<TranscriptRow>
+          alignItemsAtEnd
+          dataKey={transcriptListKey}
           ref={listRef}
           data={transcriptRows}
+          getItemType={(item) => item.kind}
+          initialScrollAtEnd
           keyExtractor={(item) => item.key}
           contentContainerStyle={[
             styles.content,
@@ -172,30 +230,25 @@ export function SessionView({ sessionId }: { sessionId: string | undefined }) {
             <SessionEmpty loading={query.isPending} error={query.error} missing={query.data === null} />
           )}
           ListFooterComponent={running && session ? <WorkingFooter session={session} /> : null}
+          maintainScrollAtEnd={{ animated: false }}
+          maintainScrollAtEndThreshold={0.2}
+          maintainVisibleContentPosition
+          // Transcript rows contain disclosure state. Keep remount-on-reuse
+          // semantics until those controls use recycling-aware state.
+          recycleItems={false}
           renderItem={({ item }) => <TranscriptRowView row={item} onToggleFold={toggleFold} />}
-          onContentSizeChange={(_, height) => {
-            if (!laidOut.current || nearBottom.current) {
-              listRef.current?.scrollToEnd({ animated: false });
-              laidOut.current = true;
-              // scrollToEnd fires no scroll event; content taller than the
-              // viewport means the top now sits under the header.
-              const under = height > viewportHeight.current + 8;
-              setScrolledUnderHeader((current) => current === under ? current : under);
-            }
-          }}
-          onLayout={(event) => {
-            viewportHeight.current = event.nativeEvent.layout.height;
-          }}
           onScroll={trackScroll}
+          onScrollBeginDrag={beginTranscriptScroll}
           scrollEventThrottle={100}
           showsVerticalScrollIndicator={false}
+          style={styles.list}
         />
         {!pinnedToBottom && transcriptRows.length > 0 && (
           <GlassSurface fallbackColor={theme.surface} interactive style={styles.jumpButton}>
             <Pressable
               accessibilityLabel="Scroll to latest"
               accessibilityRole="button"
-              onPress={() => listRef.current?.scrollToEnd({ animated: true })}
+              onPress={scrollTranscriptToBottom}
               style={({ pressed }) => [styles.jumpButtonInner, { opacity: pressed ? 0.6 : 1 }]}>
               <AppSymbol
                 name={{ ios: 'arrow.down', android: 'arrow_downward', web: 'arrow_downward' }}
@@ -497,6 +550,7 @@ function SessionEmpty({
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   listFrame: { flex: 1 },
+  list: { flex: 1 },
   content: { paddingBottom: 40, paddingHorizontal: Spacing.three },
   emptyContent: { flexGrow: 1, justifyContent: 'center' },
   offlineBanner: {
