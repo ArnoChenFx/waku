@@ -42,6 +42,7 @@ import {
 const DaemonPickerTop = 8;
 const DaemonPickerHeight = 38;
 const DaemonPickerGap = 12;
+const SearchDockGap = 14;
 
 export default function TasksScreen() {
   const theme = useTheme();
@@ -98,9 +99,7 @@ export default function TasksScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={[styles.screen, { backgroundColor: theme.background }]}>
+    <View style={[styles.screen, { backgroundColor: theme.background }]}>
       <View
         pointerEvents="box-none"
         style={[styles.floatingActions, { top: insets.top + DaemonPickerTop }]}>
@@ -185,58 +184,64 @@ export default function TasksScreen() {
       )}
 
       {(daemon.profiles.length > 0 || daemon.phase === 'booting') && (
-        <View pointerEvents="box-none" style={[styles.searchDock, { bottom: insets.bottom + 14 }]}>
-          <GlassSurface interactive style={styles.searchCapsule}>
-            <View style={styles.searchCapsuleInner}>
-              <AppSymbol
-                name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
-                size={17}
-                tintColor={theme.textSecondary}
-              />
-              <TextInput
-                accessibilityLabel="Search tasks"
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="Search"
-                placeholderTextColor={theme.textTertiary}
-                selectionColor={NativeTint}
-                style={[styles.searchInput, { color: theme.text }]}
-                value={search}
-                onChangeText={setSearch}
-              />
-              {search.length > 0 && (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'position' : undefined}
+          keyboardVerticalOffset={SearchDockGap}
+          pointerEvents="box-none"
+          style={[styles.searchDockAvoider, { bottom: insets.bottom + SearchDockGap }]}>
+          <View pointerEvents="box-none" style={styles.searchDock}>
+            <GlassSurface interactive style={styles.searchCapsule}>
+              <View style={styles.searchCapsuleInner}>
+                <AppSymbol
+                  name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
+                  size={17}
+                  tintColor={theme.textSecondary}
+                />
+                <TextInput
+                  accessibilityLabel="Search tasks"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="Search"
+                  placeholderTextColor={theme.textTertiary}
+                  selectionColor={NativeTint}
+                  style={[styles.searchInput, { color: theme.text }]}
+                  value={search}
+                  onChangeText={setSearch}
+                />
+                {search.length > 0 && (
+                  <Pressable
+                    accessibilityLabel="Clear search"
+                    accessibilityRole="button"
+                    hitSlop={8}
+                    onPress={() => setSearch('')}
+                    style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}>
+                    <AppSymbol
+                      name={{ ios: 'xmark.circle.fill', android: 'cancel', web: 'cancel' }}
+                      size={16}
+                      tintColor={theme.textTertiary}
+                    />
+                  </Pressable>
+                )}
+              </View>
+            </GlassSurface>
+            {daemon.phase === 'connected' && (
+              <GlassSurface interactive style={styles.composeButton}>
                 <Pressable
-                  accessibilityLabel="Clear search"
+                  accessibilityLabel="New task"
                   accessibilityRole="button"
-                  hitSlop={8}
-                  onPress={() => setSearch('')}
-                  style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}>
+                  hitSlop={6}
+                  onPress={() => router.push('/new-task')}
+                  style={({ pressed }) => [styles.roundInner, { opacity: pressed ? 0.5 : 1 }]}>
                   <AppSymbol
-                    name={{ ios: 'xmark.circle.fill', android: 'cancel', web: 'cancel' }}
-                    size={16}
-                    tintColor={theme.textTertiary}
+                    name={{ ios: 'square.and.pencil', android: 'edit_square', web: 'edit' }}
+                    size={20}
+                    tintColor={theme.text}
                   />
                 </Pressable>
-              )}
-            </View>
-          </GlassSurface>
-          {daemon.phase === 'connected' && (
-            <GlassSurface interactive style={styles.composeButton}>
-              <Pressable
-                accessibilityLabel="New task"
-                accessibilityRole="button"
-                hitSlop={6}
-                onPress={() => router.push('/new-task')}
-                style={({ pressed }) => [styles.roundInner, { opacity: pressed ? 0.5 : 1 }]}>
-                <AppSymbol
-                  name={{ ios: 'square.and.pencil', android: 'edit_square', web: 'edit' }}
-                  size={20}
-                  tintColor={theme.text}
-                />
-              </Pressable>
-            </GlassSurface>
-          )}
-        </View>
+              </GlassSurface>
+            )}
+          </View>
+        </KeyboardAvoidingView>
       )}
 
       <Sheet onDismiss={() => setActionTarget(null)} visible={actionTarget !== null}>
@@ -275,7 +280,7 @@ export default function TasksScreen() {
           visible
         />
       )}
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -471,15 +476,17 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
   roundInner: { alignItems: 'center', flex: 1, justifyContent: 'center' },
+  searchDockAvoider: {
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    zIndex: 20,
+  },
   searchDock: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: 10,
-    left: 0,
     paddingHorizontal: Spacing.three,
-    position: 'absolute',
-    right: 0,
-    zIndex: 20,
   },
   searchCapsule: { borderRadius: Radius.pill, flex: 1 },
   searchCapsuleInner: {
