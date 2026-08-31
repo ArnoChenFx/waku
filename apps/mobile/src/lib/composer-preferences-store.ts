@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { InteractionMode, RuntimeMode } from '@waku/client';
+import type { RuntimeMode } from '@waku/client';
 import {
   readComposerPreferences,
   writeComposerPreferences,
@@ -7,10 +7,9 @@ import {
 } from '@waku/client/composer-preferences';
 
 /** Mobile-only additions to the shared composer preferences: the New Task
- * page also restores access mode, build/plan, workspace choice, and project. */
+ * page also restores access mode, workspace choice, and project. */
 export interface NewTaskExtras {
   runtimeMode: RuntimeMode;
-  interactionMode: InteractionMode;
   isolated: boolean;
   projectId: string | null;
 }
@@ -18,7 +17,6 @@ export interface NewTaskExtras {
 const EXTRAS_KEY = 'waku.mobile.new-task.v1';
 const DEFAULT_EXTRAS: NewTaskExtras = {
   runtimeMode: 'fullAccess',
-  interactionMode: 'build',
   isolated: false,
   projectId: null,
 };
@@ -91,7 +89,6 @@ export async function loadNewTaskExtras(daemonAddress: string): Promise<NewTaskE
     const extras = value as Partial<NewTaskExtras>;
     return {
       runtimeMode: isRuntimeMode(extras.runtimeMode) ? extras.runtimeMode : 'fullAccess',
-      interactionMode: extras.interactionMode === 'plan' ? 'plan' : 'build',
       isolated: extras.isolated === true,
       projectId: typeof extras.projectId === 'string' ? extras.projectId : null,
     };
@@ -119,6 +116,6 @@ export async function saveNewTaskExtras(
 }
 
 function isRuntimeMode(value: unknown): value is RuntimeMode {
-  return value === 'plan' || value === 'ask' || value === 'autoAcceptEdits' ||
+  return value === 'ask' || value === 'autoAcceptEdits' ||
     value === 'auto' || value === 'fullAccess';
 }

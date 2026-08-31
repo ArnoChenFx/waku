@@ -2,7 +2,6 @@ import type {
   AgentSession,
   AgentTurn,
   Checkpoint,
-  InteractionMode,
   Message,
   Project,
   ProviderKind,
@@ -119,17 +118,12 @@ export function providerLabel(provider: ProviderKind): string {
 
 export function runtimeModeLabel(mode: RuntimeMode): string {
   const labels: Record<RuntimeMode, string> = {
-    plan: 'Plan',
     ask: 'Ask first',
     autoAcceptEdits: 'Accept edits',
     auto: 'Auto',
     fullAccess: 'Full access',
   };
   return labels[mode];
-}
-
-export function interactionModeLabel(mode: InteractionMode): string {
-  return mode === 'plan' ? 'Plan' : 'Build';
 }
 
 export function contextPercent(session: AgentSession): number | null {

@@ -1,6 +1,5 @@
 import type {
   AgentSession,
-  InteractionMode,
   Project,
   ProviderKind,
   RuntimeMode,
@@ -16,7 +15,6 @@ export interface NewSessionOptions {
   model?: string | null;
   reasoningEffort?: string | null;
   runtimeMode?: RuntimeMode;
-  interactionMode?: InteractionMode;
   /** Base branch for an isolated worktree; null means the project default. */
   baseBranch?: string | null;
 }
@@ -84,7 +82,6 @@ export function createSession(
     provider,
     model: options.model ?? null,
     runtime_mode: options.runtimeMode ?? 'fullAccess',
-    interaction_mode: options.interactionMode ?? 'build',
     reasoning_effort: options.reasoningEffort ?? null,
     service_tier: null,
     context_window: null,
@@ -138,7 +135,6 @@ export interface SessionOptionChanges {
   model?: string | null;
   reasoningEffort?: string | null;
   runtimeMode?: RuntimeMode;
-  interactionMode?: InteractionMode;
 }
 
 export function applySessionOptions(
@@ -152,7 +148,6 @@ export function applySessionOptions(
     reasoning_effort:
       changes.reasoningEffort !== undefined ? changes.reasoningEffort : session.reasoning_effort,
     runtime_mode: changes.runtimeMode ?? session.runtime_mode,
-    interaction_mode: changes.interactionMode ?? session.interaction_mode,
     updated_at: clock.nowSeconds(),
   };
 }

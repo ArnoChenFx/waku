@@ -79,12 +79,11 @@ describe('mobile runtime projection', () => {
       provider: 'claude',
       workspace: { kind: 'newWorktree' },
       runtime_mode: 'fullAccess',
-      interaction_mode: 'build',
       status: 'idle',
     });
   });
 
-  test('creates a draft carrying the chosen model and modes', () => {
+  test('creates a draft carrying the chosen model and access mode', () => {
     const created = createSession('project', 'codex', false, {
       nowSeconds: () => 50,
       randomUUID: () => 'new-session',
@@ -92,13 +91,11 @@ describe('mobile runtime projection', () => {
       model: 'gpt-5-codex',
       reasoningEffort: 'high',
       runtimeMode: 'ask',
-      interactionMode: 'plan',
     });
     expect(created).toMatchObject({
       model: 'gpt-5-codex',
       reasoning_effort: 'high',
       runtime_mode: 'ask',
-      interaction_mode: 'plan',
     });
   });
 
@@ -123,13 +120,12 @@ describe('mobile runtime projection', () => {
 
   test('applies option changes without clobbering unrelated fields', () => {
     const current = session({ model: 'old', reasoning_effort: 'low' });
-    const next = applySessionOptions(current, { model: 'new-model', interactionMode: 'plan' }, {
+    const next = applySessionOptions(current, { model: 'new-model' }, {
       nowSeconds: () => 77,
       randomUUID: () => 'unused',
     });
     expect(next.model).toBe('new-model');
     expect(next.reasoning_effort).toBe('low');
-    expect(next.interaction_mode).toBe('plan');
     expect(next.runtime_mode).toBe(current.runtime_mode);
     expect(next.updated_at).toBe(77);
     const cleared = applySessionOptions(current, { model: null, reasoningEffort: null }, {
@@ -150,7 +146,6 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     workspace: { kind: 'local' },
     provider: 'codex',
     runtime_mode: 'fullAccess',
-    interaction_mode: 'build',
     status: 'idle',
     created_at: 1,
     updated_at: 1,

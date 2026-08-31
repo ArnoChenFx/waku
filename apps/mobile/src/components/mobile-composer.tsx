@@ -325,19 +325,6 @@ export function MobileComposer({ session }: { session: AgentSession }) {
               label="Agent access"
               onPress={() => setAccessSheetOpen(true)}
             />
-            <ComposerIconButton
-              active={session.interaction_mode === 'plan'}
-              icon={session.interaction_mode === 'plan'
-                ? { ios: 'list.bullet.clipboard', android: 'assignment', web: 'assignment' }
-                : { ios: 'hammer', android: 'construction', web: 'construction' }}
-              label={session.interaction_mode === 'plan' ? 'Plan mode on' : 'Build mode'}
-              onPress={() => {
-                void Haptics.selectionAsync();
-                applyOptions({
-                  interactionMode: session.interaction_mode === 'plan' ? 'build' : 'plan',
-                });
-              }}
-            />
           </>
         )}
         placeholder={placeholder}

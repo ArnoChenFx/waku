@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { InteractionMode, ProviderKind, RuntimeMode } from '@waku/client';
+import type { ProviderKind, RuntimeMode } from '@waku/client';
 import { rememberComposerSession } from '@waku/client/composer-preferences';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
@@ -60,7 +60,6 @@ export default function NewTaskScreen() {
   const [model, setModel] = useState<string | null>(null);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>('fullAccess');
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>('build');
   const [isolated, setIsolated] = useState(false);
   const [baseBranch, setBaseBranch] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -119,7 +118,6 @@ export default function NewTaskScreen() {
         loadNewTaskExtras(address),
       ]);
       setRuntimeMode(extras.runtimeMode);
-      setInteractionMode(extras.interactionMode);
       setIsolated(extras.isolated);
       if (extras.projectId) setProjectId(extras.projectId);
       setProvider(prefs.lastProvider);
@@ -143,13 +141,12 @@ export default function NewTaskScreen() {
       })).catch(() => {});
       void saveNewTaskExtras(address, {
         runtimeMode,
-        interactionMode,
         isolated,
         projectId,
       }).catch(() => {});
     }, 300);
     return () => clearTimeout(timer);
-  }, [daemon.activeProfile?.address, interactionMode, isolated, model, projectId, provider, reasoningEffort, restoredAddress, runtimeMode]);
+  }, [daemon.activeProfile?.address, isolated, model, projectId, provider, reasoningEffort, restoredAddress, runtimeMode]);
 
   // Cross-device draft: prefill from the daemon-persisted new-session draft
   // for this project, and persist edits back, debounced.
@@ -203,7 +200,7 @@ export default function NewTaskScreen() {
         provider,
         isolated && !projectless,
         value,
-        { model, reasoningEffort, runtimeMode, interactionMode, baseBranch },
+        { model, reasoningEffort, runtimeMode, baseBranch },
       );
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       const address = daemon.activeProfile?.address;
@@ -222,7 +219,6 @@ export default function NewTaskScreen() {
         }).catch(() => {});
         void saveNewTaskExtras(address, {
           runtimeMode,
-          interactionMode,
           isolated: isolated && !projectless,
           projectId: selectedProject.id,
         }).catch(() => {});
@@ -325,17 +321,6 @@ export default function NewTaskScreen() {
                 icon={{ ios: 'hand.raised', android: 'front_hand', web: 'pan_tool' }}
                 label="Agent access"
                 onPress={() => setOpenSheet('access')}
-              />
-              <ComposerIconButton
-                active={interactionMode === 'plan'}
-                icon={interactionMode === 'plan'
-                  ? { ios: 'list.bullet.clipboard', android: 'assignment', web: 'assignment' }
-                  : { ios: 'hammer', android: 'construction', web: 'construction' }}
-                label={interactionMode === 'plan' ? 'Plan mode on' : 'Build mode'}
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  setInteractionMode((mode) => mode === 'plan' ? 'build' : 'plan');
-                }}
               />
             </>
           )}

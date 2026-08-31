@@ -386,7 +386,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             binary: startup!.binary,
             cwd: startup!.cwd,
             mode: current.runtime_mode,
-            interactionMode: current.interaction_mode,
             model: current.model ?? null,
             reasoningEffort: current.reasoning_effort ?? null,
             serviceTier: current.service_tier ?? null,
@@ -521,7 +520,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     markWorking(sessionId);
   }, [daemon.client, markWorking]);
 
-  /** Change model / effort / access / interaction mode. Applied live via
+  /** Change model / effort / access mode. Applied live via
    * applyOptions when a runtime exists; a runtime that can't take the change
    * is closed so the next prompt restarts with the new options. */
   const updateSessionOptions = useCallback(async (
@@ -543,7 +542,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
           type: 'applyOptions',
           options: {
             mode: next.runtime_mode,
-            interactionMode: next.interaction_mode,
             model: next.model ?? null,
             reasoningEffort: next.reasoning_effort ?? null,
             serviceTier: next.service_tier ?? null,

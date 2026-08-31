@@ -222,7 +222,6 @@ function session(overrides: Partial<AgentSession>): AgentSession {
     project_id: 'project',
     provider: 'codex',
     runtime_mode: 'autoAcceptEdits',
-    interaction_mode: 'build',
     status: 'idle',
     created_at: 1,
     updated_at: 1,

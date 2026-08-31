@@ -257,7 +257,6 @@ function transcriptSession(): AgentSession {
     project_id: 'project',
     provider: 'codex',
     runtime_mode: 'fullAccess',
-    interaction_mode: 'build',
     status: 'idle',
     created_at: 10,
     updated_at: 200,
