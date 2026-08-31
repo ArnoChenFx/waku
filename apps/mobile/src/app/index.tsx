@@ -19,6 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppSymbol } from '@/components/app-symbol';
+import { ConnectionErrorCard } from '@/components/connection-error-card';
 import { GlassSurface } from '@/components/glass-surface';
 import { ProviderIcon, providerBrandColor } from '@/components/provider-icon';
 import { ConnectionStatus } from '@/components/connection-status';
@@ -37,6 +38,10 @@ import {
   relativeSessionTime,
   type SessionListItem,
 } from '@/lib/session-presentation';
+
+const DaemonPickerTop = 8;
+const DaemonPickerHeight = 38;
+const DaemonPickerGap = 12;
 
 export default function TasksScreen() {
   const theme = useTheme();
@@ -96,7 +101,9 @@ export default function TasksScreen() {
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={[styles.screen, { backgroundColor: theme.background }]}>
-      <View pointerEvents="box-none" style={[styles.floatingActions, { top: insets.top + 8 }]}>
+      <View
+        pointerEvents="box-none"
+        style={[styles.floatingActions, { top: insets.top + DaemonPickerTop }]}>
         <GlassSurface interactive style={styles.daemonButton}>
           <Pressable
             accessibilityHint="Opens the daemon switcher"
@@ -134,11 +141,15 @@ export default function TasksScreen() {
           keyExtractor={(item) => item.session.id}
           contentContainerStyle={[
             styles.listContent,
+            {
+              paddingTop:
+                insets.top + DaemonPickerTop + DaemonPickerHeight + DaemonPickerGap,
+            },
             sections.length === 0 && styles.listContentEmpty,
           ]}
           refreshControl={(
             <RefreshControl
-              refreshing={taskState.isRefetching || daemon.phase === 'connecting'}
+              refreshing={taskState.isRefetching}
               tintColor={theme.textTertiary}
               onRefresh={() => {
                 if (daemon.phase === 'connected') void taskState.refetch();
@@ -160,14 +171,7 @@ export default function TasksScreen() {
               }}
             />
           )}
-          ListHeaderComponent={(
-            <>
-              <Text style={[styles.listTitle, { color: theme.text, paddingTop: insets.top + 10 }]}>
-                Waku
-              </Text>
-              {daemon.phase === 'error' ? <ConnectionErrorCard /> : null}
-            </>
-          )}
+          ListHeaderComponent={daemon.error ? <ConnectionErrorCard /> : null}
           ListEmptyComponent={(
             <TaskListEmpty
               connecting={daemon.phase === 'booting' || daemon.phase === 'connecting'}
@@ -317,34 +321,6 @@ function Onboarding() {
   );
 }
 
-function ConnectionErrorCard() {
-  const theme = useTheme();
-  const { activeProfile, error, reconnect } = useDaemon();
-  return (
-    <View style={[styles.errorCard, { backgroundColor: theme.dangerSoft }]}>
-      <View style={styles.errorIcon}>
-        <AppSymbol
-          name={{ ios: 'exclamationmark.triangle.fill', android: 'warning', web: 'warning' }}
-          size={18}
-          tintColor={theme.danger}
-        />
-      </View>
-      <View style={styles.errorCopy}>
-        <Text style={[styles.errorTitle, { color: theme.text }]}>Can’t reach {activeProfile?.name}</Text>
-        <Text style={[styles.errorBody, { color: theme.textSecondary }]}>{error}</Text>
-      </View>
-      <Pressable
-        accessibilityLabel="Retry daemon connection"
-        accessibilityRole="button"
-        hitSlop={8}
-        onPress={() => void reconnect()}
-        style={({ pressed }) => [styles.retryButton, { opacity: pressed ? 0.5 : 1 }]}>
-        <Text style={[styles.retryText, { color: NativeTint }]}>Retry</Text>
-      </Pressable>
-    </View>
-  );
-}
-
 function TaskListEmpty({
   connecting,
   error,
@@ -355,7 +331,8 @@ function TaskListEmpty({
   searching: boolean;
 }) {
   const theme = useTheme();
-  const { phase } = useDaemon();
+  const { error: daemonError, phase } = useDaemon();
+  if (daemonError) return null;
   if (connecting) {
     return (
       <View style={styles.emptyState}>
@@ -489,11 +466,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: 8,
+    left: Spacing.three,
     position: 'absolute',
-    right: Spacing.three,
     zIndex: 20,
   },
-  listTitle: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5, marginHorizontal: Spacing.three },
   roundInner: { alignItems: 'center', flex: 1, justifyContent: 'center' },
   searchDock: {
     alignItems: 'center',
@@ -520,7 +496,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: 6,
-    minHeight: 38,
+    minHeight: DaemonPickerHeight,
     paddingHorizontal: 12,
   },
   daemonButtonText: { flexShrink: 1, fontSize: 13, fontWeight: '600' },
@@ -568,21 +544,6 @@ const styles = StyleSheet.create({
     maxWidth: 330,
   },
   securityText: { flex: 1, fontSize: 12, lineHeight: 17 },
-  errorCard: {
-    alignItems: 'flex-start',
-    borderRadius: Radius.large,
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 10,
-    marginHorizontal: Spacing.three,
-    padding: 14,
-  },
-  errorIcon: { paddingTop: 1 },
-  errorCopy: { flex: 1 },
-  errorTitle: { fontSize: 14, fontWeight: '700' },
-  errorBody: { fontSize: 12, lineHeight: 17, marginTop: 3 },
-  retryButton: { justifyContent: 'center', minHeight: 32, paddingHorizontal: 4 },
-  retryText: { fontSize: 13, fontWeight: '700' },
   emptyState: {
     alignItems: 'center',
     flex: 1,

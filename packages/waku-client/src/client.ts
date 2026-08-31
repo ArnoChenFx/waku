@@ -125,6 +125,7 @@ export class WakuClient {
 
     return new Promise((resolve, reject) => {
       let handshakeSettled = false;
+      let socketErrored = false;
       const failHandshake = (error: Error) => {
         if (handshakeSettled) return;
         handshakeSettled = true;
@@ -184,11 +185,21 @@ export class WakuClient {
         this.handleMessage(message);
       });
       socket.addEventListener("error", () => {
-        failHandshake(new Error("Waku daemon connection failed"));
+        // React Native puts the useful native network error on the close
+        // event's reason, immediately after this otherwise-empty error event.
+        socketErrored = true;
       });
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         if (generation !== this.connectionGeneration) return;
-        failHandshake(new Error("Waku daemon disconnected during handshake"));
+        const reason = event.reason?.trim();
+        failHandshake(
+          new Error(
+            reason ||
+              (socketErrored
+                ? "Waku daemon connection failed"
+                : "Waku daemon disconnected during handshake"),
+          ),
+        );
         this.markDisconnected(new Error("Waku daemon disconnected"));
       });
     });

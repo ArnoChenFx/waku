@@ -15,6 +15,10 @@ import { AppState, Platform } from "react-native";
 import { daemonKeys } from "./daemon-api";
 import { hydratePersistentStorage } from "./composer-preferences-store";
 import {
+  DAEMON_RECONNECT_DELAY_MS,
+  nextDaemonReconnectAttempt,
+} from "./daemon-retry";
+import {
   normalizeDaemonProfile,
   isPrivateDaemonAddress,
   type DaemonProfile,
@@ -77,6 +81,9 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<WakuClient | null>(null);
   const [phase, setPhase] = useState<ConnectionPhase>("booting");
   const [error, setError] = useState<string | null>(null);
+  const [appIsActive, setAppIsActive] = useState(
+    AppState.currentState === "active",
+  );
   const profilesRef = useRef<DaemonProfile[]>([]);
   const activeProfileIdRef = useRef<string | null>(null);
   const clientRef = useRef<WakuClient | null>(null);
@@ -113,16 +120,18 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
     async (
       profileId: string,
       candidates = profilesRef.current,
+      preserveError = false,
     ): Promise<boolean> => {
       const profile = candidates.find((item) => item.id === profileId);
       if (!profile) return false;
 
       const attempt = ++generation.current;
+      reconnectAttempt.current = 0;
       closeCurrentClient();
       activeProfileIdRef.current = profile.id;
       setActiveProfileId(profile.id);
       updatePhase("connecting");
-      setError(null);
+      if (!preserveError) setError(null);
 
       try {
         await writeActiveDaemonId(profile.id);
@@ -170,6 +179,7 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
         }
         if (state === "connected") {
           connectedOnce = true;
+          reconnectAttempt.current = 0;
           setError(null);
           updatePhase("connected");
           return;
@@ -220,7 +230,7 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
     const id = activeProfileIdRef.current;
     const current = clientRef.current;
     if (!id) return false;
-    if (!current) return activate(id);
+    if (!current) return activate(id, profilesRef.current, true);
     if (current.connectionState === "connected") {
       setError(null);
       updatePhase("connected");
@@ -229,7 +239,6 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
     if (current.connectionState === "connecting") return false;
 
     const attempt = generation.current;
-    setError(null);
     updatePhase("connecting");
     try {
       await current.connect();
@@ -272,30 +281,33 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") return;
-      const id = activeProfileIdRef.current;
-      if (id && phaseRef.current === "error") void reconnect();
+      setAppIsActive(state === "active");
     });
     return () => subscription.remove();
-  }, [reconnect]);
+  }, []);
 
-  // A dropped connection retries itself with capped exponential backoff while
-  // the app is foregrounded. Every phase change reruns this effect, so a
-  // failed attempt (error → connecting → error) schedules the next one and a
-  // success resets the ladder.
+  // Retry a failed daemon connection three times, five seconds apart. Keep the
+  // completed-attempt count through the intermediate `connecting` phase so a
+  // failure cannot accidentally restart the retry budget.
   useEffect(() => {
-    if (phase !== "error") {
+    if (phase === "connected" || phase === "disconnected") {
       reconnectAttempt.current = 0;
-      return;
     }
-    if (AppState.currentState !== "active") return;
-    const delay = Math.min(30_000, 1_000 * 2 ** reconnectAttempt.current);
+    if (phase !== "error" || !appIsActive || !clientRef.current) return;
+    const nextAttempt = nextDaemonReconnectAttempt(reconnectAttempt.current);
+    if (nextAttempt === null) return;
     const timer = setTimeout(() => {
-      reconnectAttempt.current += 1;
+      if (
+        phaseRef.current !== "error" ||
+        AppState.currentState !== "active"
+      ) {
+        return;
+      }
+      reconnectAttempt.current = nextAttempt;
       void reconnect();
-    }, delay);
+    }, DAEMON_RECONNECT_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [phase, reconnect]);
+  }, [appIsActive, phase, reconnect]);
 
   useEffect(
     () => () => {
