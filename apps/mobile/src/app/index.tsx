@@ -51,8 +51,10 @@ export default function TasksScreen() {
   const runtime = useRuntime();
   const taskState = useTaskState();
   const [search, setSearch] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
   const [actionTarget, setActionTarget] = useState<AgentSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<AgentSession | null>(null);
+  const refreshOffset = insets.top + DaemonPickerTop + DaemonPickerHeight;
   const visibleSessions = useMemo(() => {
     if (!taskState.data) return [];
     const query = search.trim().toLocaleLowerCase();
@@ -98,6 +100,16 @@ export default function TasksScreen() {
     );
   }
 
+  async function refreshTasks() {
+    setRefreshing(true);
+    try {
+      if (daemon.phase === 'connected') await taskState.refetch();
+      else await daemon.reconnect();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>
       <View
@@ -141,19 +153,17 @@ export default function TasksScreen() {
           contentContainerStyle={[
             styles.listContent,
             {
-              paddingTop:
-                insets.top + DaemonPickerTop + DaemonPickerHeight + DaemonPickerGap,
+              paddingTop: refreshOffset + DaemonPickerGap,
             },
             sections.length === 0 && styles.listContentEmpty,
           ]}
           refreshControl={(
             <RefreshControl
-              refreshing={taskState.isRefetching}
+              colors={[theme.textTertiary]}
+              progressViewOffset={refreshOffset}
+              refreshing={refreshing}
               tintColor={theme.textTertiary}
-              onRefresh={() => {
-                if (daemon.phase === 'connected') void taskState.refetch();
-                else void daemon.reconnect();
-              }}
+              onRefresh={() => void refreshTasks()}
             />
           )}
           renderSectionHeader={({ section }) => (
