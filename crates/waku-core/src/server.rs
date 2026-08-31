@@ -30,11 +30,14 @@ const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_CONNECTIONS: usize = 64;
 const MAX_REPLAY_EVENTS_PER_SESSION: usize = 4096;
 const MAX_CACHED_RESPONSES: usize = 2048;
+const NATIVE_CLIENT_HEADER: &str = "x-waku-client";
+const NATIVE_CLIENT_HEADER_VALUE: &str = "native";
 
 #[derive(Clone, Debug, Default)]
 pub struct ServerOptions {
-    /// Browser WebSocket handshakes always carry an Origin header. Native
-    /// clients do not. An empty set therefore permits native clients only.
+    /// Browser WebSocket handshakes carry an Origin header. Most native clients
+    /// do not; React Native does and identifies itself with `x-waku-client`.
+    /// An empty set therefore still permits native clients only.
     pub allowed_origins: HashSet<String>,
     /// Only a daemon owned by the desktop process should accept the global
     /// shutdown control message. Service-managed daemons keep running when an
@@ -643,12 +646,17 @@ fn validate_handshake(
             "unknown daemon endpoint",
         ));
     }
+    let is_native_client = request
+        .headers()
+        .get(NATIVE_CLIENT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == NATIVE_CLIENT_HEADER_VALUE);
     if let Some(origin) = request.headers().get(ORIGIN) {
         let allowed = origin
             .to_str()
             .ok()
             .is_some_and(|origin| allowed_origins.contains(origin));
-        if !allowed {
+        if !allowed && !is_native_client {
             return Err(handshake_error(
                 StatusCode::FORBIDDEN,
                 "WebSocket origin is not allowed",
@@ -1690,6 +1698,29 @@ mod tests {
         assert!(validate_handshake(&request, HandshakeResponse::new(()), &allowed).is_ok());
         let native = HandshakeRequest::builder().uri("/v1").body(()).unwrap();
         assert!(validate_handshake(&native, HandshakeResponse::new(()), &HashSet::new()).is_ok());
+
+        let react_native = HandshakeRequest::builder()
+            .uri("/v1")
+            .header(ORIGIN, "http://192.168.0.114:34125")
+            .header(NATIVE_CLIENT_HEADER, NATIVE_CLIENT_HEADER_VALUE)
+            .body(())
+            .unwrap();
+        assert!(
+            validate_handshake(&react_native, HandshakeResponse::new(()), &HashSet::new()).is_ok()
+        );
+
+        let forged_native = HandshakeRequest::builder()
+            .uri("/v1")
+            .header(ORIGIN, "https://attacker.example")
+            .header(NATIVE_CLIENT_HEADER, "browser")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            validate_handshake(&forged_native, HandshakeResponse::new(()), &HashSet::new())
+                .unwrap_err()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[test]
