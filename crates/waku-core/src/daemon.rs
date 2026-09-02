@@ -723,7 +723,6 @@ impl Backend for WakuBackend {
                     binary: options.binary,
                     cwd: options.cwd,
                     mode: decode_enum(&options.mode)?,
-                    interaction_mode: decode_enum(&options.interaction_mode)?,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
                     service_tier: options.service_tier,
@@ -839,7 +838,6 @@ fn merge_stale_session_metadata(existing: &mut AgentSession, incoming: AgentSess
         existing.provider = incoming.provider;
         existing.model = incoming.model;
         existing.runtime_mode = incoming.runtime_mode;
-        existing.interaction_mode = incoming.interaction_mode;
         existing.reasoning_effort = incoming.reasoning_effort;
         existing.service_tier = incoming.service_tier;
         existing.context_window = incoming.context_window;
@@ -1277,7 +1275,6 @@ impl WakuBackend {
                 binary: self.provider_binary(source.provider)?,
                 cwd: cwd.to_owned(),
                 mode: source.runtime_mode,
-                interaction_mode: source.interaction_mode,
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
                 service_tier: source.service_tier.clone(),
@@ -1441,7 +1438,6 @@ impl WakuBackend {
                 binary: binary.to_owned(),
                 cwd: cwd.to_owned(),
                 mode: source.runtime_mode,
-                interaction_mode: source.interaction_mode,
                 model: source.model.clone(),
                 reasoning_effort: source.reasoning_effort.clone(),
                 service_tier: source.service_tier.clone(),
@@ -1704,7 +1700,6 @@ fn handle_driver_command(
             return Ok(ResponsePayload::OptionsApplied {
                 applied: driver.apply_options(SessionOptions {
                     mode: decode_enum(&options.mode)?,
-                    interaction_mode: decode_enum(&options.interaction_mode)?,
                     model: options.model,
                     reasoning_effort: options.reasoning_effort,
                     service_tier: options.service_tier,

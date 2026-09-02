@@ -39,8 +39,8 @@ use crate::driver::{
 };
 use crate::model::{
     ActivityKind, BackgroundWorkEvent, BackgroundWorkItem, BackgroundWorkKey, BackgroundWorkKind,
-    BackgroundWorkStatus, DriverEvent, InteractionMode, PermissionOption, ProviderResumeCursor,
-    RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
+    BackgroundWorkStatus, DriverEvent, PermissionOption, ProviderResumeCursor, RuntimeMode,
+    UserInputAnswer, UserInputOption, UserInputQuestion, unix_time_millis,
 };
 
 enum CommandMessage {
@@ -88,20 +88,15 @@ pub struct ClaudeDriver {
     commands: Sender<CommandMessage>,
     pending_user_inputs: Arc<Mutex<HashMap<String, Value>>>,
     mode: RuntimeMode,
-    interaction_mode: InteractionMode,
 }
 
 /// The permission posture Claude is launched with.
-fn permission_mode(mode: RuntimeMode, interaction_mode: InteractionMode) -> &'static str {
-    if interaction_mode == InteractionMode::Plan || mode == RuntimeMode::Plan {
-        return "plan";
-    }
+fn permission_mode(mode: RuntimeMode) -> &'static str {
     match mode {
         RuntimeMode::Ask => "default",
         RuntimeMode::AutoAcceptEdits => "acceptEdits",
         RuntimeMode::Auto => "auto",
         RuntimeMode::FullAccess => "bypassPermissions",
-        RuntimeMode::Plan => unreachable!("handled above"),
     }
 }
 
@@ -142,11 +137,7 @@ fn start_claude_title_refresh(
     );
 }
 
-fn configure_stream_command(
-    command: &mut Command,
-    mode: RuntimeMode,
-    interaction_mode: InteractionMode,
-) {
+fn configure_stream_command(command: &mut Command, mode: RuntimeMode) {
     command.args([
         "-p",
         "--input-format",
@@ -168,9 +159,9 @@ fn configure_stream_command(
         "--permission-prompt-tool",
         "stdio",
         "--permission-mode",
-        permission_mode(mode, interaction_mode),
+        permission_mode(mode),
     ]);
-    if mode == RuntimeMode::FullAccess && interaction_mode != InteractionMode::Plan {
+    if mode == RuntimeMode::FullAccess {
         command.arg("--dangerously-skip-permissions");
     }
 }
@@ -181,7 +172,6 @@ impl ClaudeDriver {
             binary,
             cwd,
             mode,
-            interaction_mode,
             model,
             reasoning_effort,
             service_tier: _,
@@ -212,7 +202,7 @@ impl ClaudeDriver {
 
         let mut command = super::provider_command(&binary, &extra_args);
         command.current_dir(&cwd);
-        configure_stream_command(&mut command, mode, interaction_mode);
+        configure_stream_command(&mut command, mode);
         let launch_model = wire_model(model.as_deref(), context_window.as_deref());
         if let Some(model) = launch_model.as_deref() {
             command.args(["--model", model]);
@@ -535,7 +525,6 @@ impl ClaudeDriver {
             commands,
             pending_user_inputs,
             mode,
-            interaction_mode,
         })
     }
 }
@@ -584,7 +573,7 @@ impl DriverControl for ClaudeDriver {
     fn apply_options(&self, options: SessionOptions) -> bool {
         // The model has a setter; the permission posture is a launch flag, and
         // changing what a running agent may touch deserves a fresh session.
-        if options.mode != self.mode || options.interaction_mode != self.interaction_mode {
+        if options.mode != self.mode {
             return false;
         }
         self.commands.send(CommandMessage::Options(options)).is_ok()
@@ -1690,11 +1679,7 @@ mod tests {
     #[test]
     fn streaming_command_requests_readable_reasoning_summary() {
         let mut command = Command::new("/usr/bin/true");
-        configure_stream_command(
-            &mut command,
-            RuntimeMode::AutoAcceptEdits,
-            InteractionMode::Build,
-        );
+        configure_stream_command(&mut command, RuntimeMode::AutoAcceptEdits);
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -1820,7 +1805,6 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
-                interaction_mode: InteractionMode::Build,
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,
@@ -1890,7 +1874,6 @@ mod tests {
                 binary,
                 cwd: std::env::temp_dir(),
                 mode: RuntimeMode::FullAccess,
-                interaction_mode: InteractionMode::Build,
                 model: Some("claude-haiku-4-5-20251001".into()),
                 reasoning_effort: None,
                 service_tier: None,
@@ -1969,7 +1952,6 @@ mod tests {
             commands,
             pending_user_inputs: Arc::new(Mutex::new(HashMap::new())),
             mode: RuntimeMode::FullAccess,
-            interaction_mode: InteractionMode::Build,
         };
 
         assert!(driver.supports_steer());
@@ -2401,21 +2383,11 @@ mod tests {
 
     #[test]
     fn access_modes_map_to_claude_permission_modes() {
+        assert_eq!(permission_mode(RuntimeMode::Ask), "default");
+        assert_eq!(permission_mode(RuntimeMode::AutoAcceptEdits), "acceptEdits");
         assert_eq!(
-            permission_mode(RuntimeMode::Ask, InteractionMode::Build),
-            "default"
-        );
-        assert_eq!(
-            permission_mode(RuntimeMode::AutoAcceptEdits, InteractionMode::Build),
-            "acceptEdits"
-        );
-        assert_eq!(
-            permission_mode(RuntimeMode::FullAccess, InteractionMode::Build),
+            permission_mode(RuntimeMode::FullAccess),
             "bypassPermissions"
-        );
-        assert_eq!(
-            permission_mode(RuntimeMode::FullAccess, InteractionMode::Plan),
-            "plan"
         );
     }
 

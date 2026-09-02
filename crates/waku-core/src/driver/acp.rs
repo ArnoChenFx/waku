@@ -34,8 +34,8 @@ use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
 use crate::model::{
-    ActivityKind, DriverEvent, InteractionMode, PermissionOption, ProviderKind,
-    ProviderResumeCursor, RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
+    ActivityKind, DriverEvent, PermissionOption, ProviderKind, ProviderResumeCursor, RuntimeMode,
+    UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 
 enum CommandMessage {
@@ -58,7 +58,6 @@ pub struct AcpDriver {
     commands: smol::channel::Sender<CommandMessage>,
     supports_steer: bool,
     mode: RuntimeMode,
-    interaction_mode: InteractionMode,
     computer_use: Option<super::support::HeadlessComputerUseRuntime>,
 }
 
@@ -115,7 +114,6 @@ impl AcpDriver {
             binary,
             cwd,
             mode,
-            interaction_mode,
             model,
             reasoning_effort,
             service_tier: _,
@@ -181,7 +179,6 @@ impl AcpDriver {
                     provider,
                     cwd,
                     mode,
-                    interaction_mode,
                     model,
                     reasoning_effort,
                     resume_session_id,
@@ -204,7 +201,6 @@ impl AcpDriver {
             commands,
             supports_steer: provider != ProviderKind::Fx,
             mode,
-            interaction_mode,
             computer_use,
         })
     }
@@ -362,7 +358,6 @@ async fn run_sdk_connection(
     provider: ProviderKind,
     cwd: std::path::PathBuf,
     mode: RuntimeMode,
-    interaction_mode: InteractionMode,
     model: Option<String>,
     reasoning_effort: Option<String>,
     resume_session_id: Option<String>,
@@ -527,7 +522,7 @@ async fn run_sdk_connection(
             )
             .await?;
 
-            if let Some(mode_id) = desired_mode(provider, modes.as_ref(), mode, interaction_mode) {
+            if let Some(mode_id) = desired_access_mode(provider, modes.as_ref(), mode) {
                 // Mode selection is opportunistic: an agent can advertise a
                 // mode but reject a later transition without invalidating the
                 // session itself.
@@ -736,31 +731,46 @@ async fn establish_session(
     Ok((response.session_id, response.modes, response.config_options))
 }
 
-fn desired_mode(
+fn desired_access_mode(
     provider: ProviderKind,
     modes: Option<&SessionModeState>,
     mode: RuntimeMode,
-    interaction_mode: InteractionMode,
 ) -> Option<SessionModeId> {
     let modes = modes?;
     let desired = if provider == ProviderKind::Fx {
-        if mode == RuntimeMode::Ask {
+        let desired = if mode == RuntimeMode::Ask {
             "ask"
         } else {
             "code"
-        }
+        };
+        modes
+            .available_modes
+            .iter()
+            .find(|mode| mode.id.to_string().eq_ignore_ascii_case(desired))?
+            .id
+            .clone()
     } else {
-        if interaction_mode != InteractionMode::Plan && mode != RuntimeMode::Plan {
+        // Sessions created before the interaction toggle was removed may
+        // retain the provider's read-only mode. Return only those sessions to
+        // the provider's ordinary execution mode; otherwise leave externally
+        // selected native modes untouched.
+        if !modes
+            .current_mode_id
+            .to_string()
+            .eq_ignore_ascii_case("plan")
+        {
             return None;
         }
-        "plan"
+        modes
+            .available_modes
+            .iter()
+            .find(|mode| {
+                let id = mode.id.to_string();
+                id.eq_ignore_ascii_case("agent") || id.eq_ignore_ascii_case("default")
+            })?
+            .id
+            .clone()
     };
-    let desired = modes
-        .available_modes
-        .iter()
-        .find(|mode| mode.id.to_string().eq_ignore_ascii_case(desired))?
-        .id
-        .clone();
     (modes.current_mode_id != desired).then_some(desired)
 }
 
@@ -2061,7 +2071,7 @@ impl DriverControl for AcpDriver {
     }
 
     fn apply_options(&self, options: SessionOptions) -> bool {
-        if options.mode != self.mode || options.interaction_mode != self.interaction_mode {
+        if options.mode != self.mode {
             return false;
         }
         self.commands
@@ -2214,32 +2224,19 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_selects_the_advertised_plan_mode() {
+    fn legacy_read_only_sessions_return_to_the_advertised_agent_mode() {
         let modes = SessionModeState::new(
-            "agent",
+            "plan",
             vec![
                 SessionMode::new("agent", "Agent"),
                 SessionMode::new("plan", "Plan"),
             ],
         );
+
         assert_eq!(
-            desired_mode(
-                ProviderKind::Cursor,
-                Some(&modes),
-                RuntimeMode::FullAccess,
-                InteractionMode::Plan
-            )
-            .map(|mode| mode.to_string()),
-            Some("plan".to_owned())
-        );
-        assert!(
-            desired_mode(
-                ProviderKind::Cursor,
-                Some(&modes),
-                RuntimeMode::FullAccess,
-                InteractionMode::Build
-            )
-            .is_none()
+            desired_access_mode(ProviderKind::Cursor, Some(&modes), RuntimeMode::FullAccess)
+                .map(|mode| mode.to_string()),
+            Some("agent".to_owned())
         );
     }
 
@@ -2253,23 +2250,12 @@ mod tests {
             ],
         );
         assert_eq!(
-            desired_mode(
-                ProviderKind::Fx,
-                Some(&modes),
-                RuntimeMode::Ask,
-                InteractionMode::Build
-            )
-            .map(|mode| mode.to_string()),
+            desired_access_mode(ProviderKind::Fx, Some(&modes), RuntimeMode::Ask)
+                .map(|mode| mode.to_string()),
             Some("ask".to_owned())
         );
         assert!(
-            desired_mode(
-                ProviderKind::Fx,
-                Some(&modes),
-                RuntimeMode::FullAccess,
-                InteractionMode::Build
-            )
-            .is_none()
+            desired_access_mode(ProviderKind::Fx, Some(&modes), RuntimeMode::FullAccess).is_none()
         );
     }
 
@@ -2632,8 +2618,7 @@ mod tests {
                 binary,
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
-                interaction_mode: InteractionMode::Build,
-                model: None,
+                model: Some("grok-4.5".into()),
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: None,
@@ -2687,7 +2672,6 @@ mod tests {
                 binary,
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
-                interaction_mode: InteractionMode::Build,
                 model: Some("cursor-grok-4.6-xhigh".into()),
                 reasoning_effort: None,
                 service_tier: None,
@@ -2747,7 +2731,6 @@ mod tests {
                 binary,
                 cwd: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
                 mode: RuntimeMode::FullAccess,
-                interaction_mode: InteractionMode::Build,
                 model: None,
                 reasoning_effort: None,
                 service_tier: None,

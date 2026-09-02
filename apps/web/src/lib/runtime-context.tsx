@@ -303,7 +303,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
               type: 'applyOptions',
               options: {
                 mode: session.runtime_mode,
-                interactionMode: session.interaction_mode,
                 model: session.model ?? null,
                 reasoningEffort: session.reasoning_effort ?? null,
                 serviceTier: session.service_tier ?? null,
@@ -732,7 +731,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
                 binary: startup!.probe.path!,
                 cwd: sessionCwd(session, project),
                 mode: session.runtime_mode,
-                interactionMode: session.interaction_mode,
                 model: session.model ?? null,
                 reasoningEffort: session.reasoning_effort ?? null,
                 serviceTier: session.service_tier ?? null,
@@ -909,8 +907,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         staleTime: 60_000,
       })
       const binaryOverride = settings.provider_binary_overrides?.[currentSession.provider] ?? null
+      const extraArgs = normalizeProviderArgs(settings.provider_extra_args?.[currentSession.provider])
       const providerProbe = await queryClient.fetchQuery({
-        queryKey: daemonKeys.provider(config.address, currentSession.provider, binaryOverride),
+        queryKey: daemonKeys.provider(config.address, currentSession.provider, binaryOverride, extraArgs),
         queryFn: async () => {
           const data = await probeProvider(client, currentSession.provider, settings)
           writeProviderProbeCache(
@@ -918,6 +917,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
             config.address,
             currentSession.provider,
             binaryOverride,
+            extraArgs,
             data,
           )
           return data
@@ -953,7 +953,6 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
               binary: providerProbe.path,
               cwd: sessionCwd(session, project),
               mode: session.runtime_mode,
-              interactionMode: session.interaction_mode,
               model: session.model ?? null,
               reasoningEffort: session.reasoning_effort ?? null,
               serviceTier: session.service_tier ?? null,
@@ -1389,7 +1388,6 @@ function mergeSessionSummary(previous: AgentSession, next: AgentSession): AgentS
     provider: next.provider,
     model: next.model,
     runtime_mode: next.runtime_mode,
-    interaction_mode: next.interaction_mode,
     reasoning_effort: next.reasoning_effort,
     service_tier: next.service_tier,
     agent_preset: next.agent_preset,
