@@ -646,23 +646,25 @@ mod tests {
 
     #[test]
     fn global_session_list_maps_root_sessions_across_projects() {
+        let catalog_root = std::env::temp_dir().join("waku-opencode-session-catalog");
+        let waku_directory = catalog_root.join("dev").join("waku");
         let response = json!([
             {
                 "id": "ses_waku",
                 "title": "Review and merge Waku PR #113",
-                "directory": "/Users/egoist/dev/waku",
+                "directory": waku_directory,
                 "time": { "created": 1_787_000_000_123_u64, "updated": 1_787_000_100_999_u64 },
-                "project": { "id": "prj_waku", "worktree": "/Users/egoist/dev/waku" }
+                "project": { "id": "prj_waku", "worktree": waku_directory }
             },
             {
                 "id": " ses_untitled ",
-                "directory": "/Users/egoist",
+                "directory": catalog_root,
                 "time": { "created": 1_786_000_000_000_u64 },
-                "project": { "id": "global", "worktree": "/" }
+                "project": { "id": "global", "worktree": catalog_root }
             },
             { "id": "ses_relative", "title": "skipped", "directory": "relative/dir" },
-            { "title": "no id", "directory": "/tmp" },
-            { "id": "", "directory": "/tmp" }
+            { "title": "no id", "directory": catalog_root },
+            { "id": "", "directory": catalog_root }
         ]);
 
         let sessions = session_summaries(&response);
@@ -675,11 +677,11 @@ mod tests {
             }
         );
         assert_eq!(sessions[0].title, "Review and merge Waku PR #113");
-        assert_eq!(sessions[0].cwd, Path::new("/Users/egoist/dev/waku"));
+        assert_eq!(sessions[0].cwd, waku_directory);
         assert_eq!(sessions[0].created_at, 1_787_000_000);
         assert_eq!(sessions[0].updated_at, 1_787_000_100);
         assert_eq!(sessions[1].title, "OpenCode session ses_unti");
-        assert_eq!(sessions[1].cwd, Path::new("/Users/egoist"));
+        assert_eq!(sessions[1].cwd, catalog_root);
         assert_eq!(sessions[1].updated_at, sessions[1].created_at);
     }
 

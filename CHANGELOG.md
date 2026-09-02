@@ -16,10 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [0.1.17]
+
 - Fix the OpenCode Resume list showing only sessions started outside a git checkout; it now lists sessions from every project
 - Hold Claude's turn open while it waits on background work
 
-## 0.1.16
+## [0.1.16]
 
 - Import and continue conversations started in agent CLIs with `/resume` or the command palette across every provider, in both Waku and Waku Web
 - Linux: add signed in-app updates with clean relaunch and automatic rollback
