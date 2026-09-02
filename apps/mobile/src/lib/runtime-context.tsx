@@ -4,6 +4,7 @@ import type {
   PendingPermission,
   PendingUserInput,
   ProviderKind,
+  SequencedEvent,
   UserInputAnswer,
 } from '@waku/client';
 import { reduceRuntimeEvent } from '@waku/client/event-reducer';
@@ -54,6 +55,20 @@ export interface MobileRuntime {
 interface RuntimeEntry extends MobileRuntime {
   lastDriverError: string | null;
   unsubscribe: () => void;
+  /** Buffered runtime events awaiting the next commit. */
+  pending: SequencedEvent[];
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  lastFlushAt: number;
+}
+
+/** Stream deltas commit at ≤ ~8.3 Hz, the desktop stream pump's cadence: the
+ * transcript re-renders per commit, not per provider chunk. Interactive
+ * events (permissions, turn lifecycle) flush the buffer immediately. */
+const STREAM_COMMIT_MS = 120;
+
+function deferrableEvent(event: SequencedEvent): boolean {
+  const kind = event.event.kind;
+  return kind === 'textDelta' || kind === 'reasoningDelta' || kind === 'usageUpdated';
 }
 
 interface RuntimeContextValue {
@@ -227,15 +242,23 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       starting,
       lastDriverError: null,
       unsubscribe: () => {},
+      pending: [],
+      flushTimer: null,
+      lastFlushAt: 0,
     };
     entries.current.set(session.id, entry);
     cacheSession(session);
     setRuntimes((current) => ({ ...current, [session.id]: publicRuntime(entry) }));
-    const unsubscribe = client.subscribe(session.id, runtimeId, (event) => {
-      if (entries.current.get(session.id) !== entry) return;
-      const key = daemonKeys.session(profileId, session.id);
-      let current = queryClient.getQueryData<AgentSession>(key) ?? session;
-      if (!shouldApplyRuntimeEvent(current, event)) return;
+
+    /** Apply one (possibly coalesced) event to `current` and collect its
+     * side effects; the caller commits once per flush. */
+    interface FlushState {
+      current: AgentSession;
+      mutated: boolean;
+      settled: boolean;
+      removeRuntime: boolean;
+    }
+    const reduceOne = (state: FlushState, event: SequencedEvent) => {
       if (event.event.kind === 'connected' || event.event.kind === 'turnStarted' || event.event.kind === 'turnFinished') {
         entry.lastDriverError = null;
       } else if (event.event.kind === 'error' && typeof event.event.payload === 'string') {
@@ -245,13 +268,13 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         const payload = event.event.payload as { message?: string };
         const pending = pendingSteers.current.get(session.id)?.shift();
         if (pending) {
-          current = {
-            ...current,
+          state.current = {
+            ...state.current,
             messages: [
-              ...current.messages,
+              ...state.current.messages,
               {
                 id: clock.randomUUID(),
-                turn_id: current.turns.at(-1)?.id ?? null,
+                turn_id: state.current.turns.at(-1)?.id ?? null,
                 role: 'user',
                 content: payload.message ?? pending,
                 created_at: clock.nowSeconds(),
@@ -263,18 +286,17 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       } else if (event.event.kind === 'steerRejected') {
         const pending = pendingSteers.current.get(session.id)?.shift();
         if (pending) {
-          current = queueSubmission(current, pending, clock);
-          cacheSession(current);
-          void persistOrdered(current).catch(() => {});
+          state.current = queueSubmission(state.current, pending, clock);
+          void persistOrdered(state.current).catch(() => {});
           setErrors((values) => ({
             ...values,
             [session.id]: 'The agent couldn’t take that mid-turn, so it was queued for the next turn.',
           }));
         }
       }
-      const result = reduceRuntimeEvent(current, event, clock, entry.lastDriverError);
-      cacheSession(result.session);
-      schedulePersist(session.id);
+      const result = reduceRuntimeEvent(state.current, event, clock, entry.lastDriverError);
+      state.current = result.session;
+      state.mutated = true;
       if (result.permission !== undefined) {
         setPermissions((values) => ({ ...values, [session.id]: result.permission ?? undefined }));
       }
@@ -282,21 +304,95 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
         setUserInputs((values) => ({ ...values, [session.id]: result.userInput ?? undefined }));
       }
       if (result.error) setErrors((values) => ({ ...values, [session.id]: result.error }));
-      if (result.settled) {
+      if (result.settled) state.settled = true;
+      if (result.removeRuntime) state.removeRuntime = true;
+    };
+
+    /** Drain the buffer as one commit. Adjacent same-kind stream deltas
+     * coalesce into a single reduce (the desktop's `pop_stream_batch`), with
+     * per-event dedupe gates so a replay straddling the cursor stays exact. */
+    const flush = () => {
+      entry.flushTimer = null;
+      entry.lastFlushAt = Date.now();
+      if (entries.current.get(session.id) !== entry) {
+        entry.pending.length = 0;
+        return;
+      }
+      const batch = entry.pending.splice(0);
+      if (!batch.length) return;
+      const key = daemonKeys.session(profileId, session.id);
+      const state: FlushState = {
+        current: queryClient.getQueryData<AgentSession>(key) ?? session,
+        mutated: false,
+        settled: false,
+        removeRuntime: false,
+      };
+      let run: { kind: 'textDelta' | 'reasoningDelta'; text: string; envelope: SequencedEvent } | null = null;
+      const flushRun = () => {
+        if (!run) return;
+        reduceOne(state, { ...run.envelope, event: { kind: run.kind, payload: run.text } });
+        run = null;
+      };
+      for (const event of batch) {
+        if (!shouldApplyRuntimeEvent(state.current, event)) continue;
+        const kind = event.event.kind;
+        if ((kind === 'textDelta' || kind === 'reasoningDelta') && typeof event.event.payload === 'string') {
+          if (run && run.kind === kind) {
+            run.text += event.event.payload;
+            run.envelope = event;
+          } else {
+            flushRun();
+            run = { kind, text: event.event.payload, envelope: event };
+          }
+          continue;
+        }
+        flushRun();
+        reduceOne(state, event);
+      }
+      flushRun();
+      if (!state.mutated) return;
+      cacheSession(state.current);
+      if (state.settled) {
         const timer = persistTimers.current.get(session.id);
         if (timer) clearTimeout(timer);
         persistTimers.current.delete(session.id);
-        void persistOrdered(result.session)
+        void persistOrdered(state.current)
           .then(() => queryClient.invalidateQueries({ queryKey: daemonKeys.taskState(profileId) }))
           .then(() => drainQueue(session.id))
           .catch((cause) => {
             setErrors((values) => ({ ...values, [session.id]: errorMessage(cause) }));
           });
+      } else {
+        schedulePersist(session.id);
       }
-      if (result.removeRuntime) removeRuntime(session.id);
+      if (state.removeRuntime) removeRuntime(session.id);
+    };
+
+    const unsubscribe = client.subscribe(session.id, runtimeId, (event) => {
+      if (entries.current.get(session.id) !== entry) return;
+      entry.pending.push(event);
+      if (!deferrableEvent(event)) {
+        if (entry.flushTimer) {
+          clearTimeout(entry.flushTimer);
+          entry.flushTimer = null;
+        }
+        flush();
+        return;
+      }
+      if (entry.flushTimer) return;
+      const wait = Math.max(0, STREAM_COMMIT_MS - (Date.now() - entry.lastFlushAt));
+      entry.flushTimer = setTimeout(flush, wait);
     });
-    if (entries.current.get(session.id) === entry) entry.unsubscribe = unsubscribe;
-    else unsubscribe();
+    const teardown = () => {
+      if (entry.flushTimer) {
+        clearTimeout(entry.flushTimer);
+        entry.flushTimer = null;
+      }
+      entry.pending.length = 0;
+      unsubscribe();
+    };
+    if (entries.current.get(session.id) === entry) entry.unsubscribe = teardown;
+    else teardown();
     return entry;
   }, [cacheSession, daemon.activeProfile?.id, daemon.client, drainQueue, persistOrdered, queryClient, removeRuntime, schedulePersist]);
 
@@ -334,9 +430,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     }
     const prompt = rawPrompt.trim();
     if (!prompt) return inputSession;
-    let current = queryClient.getQueryData<AgentSession>(
-      daemonKeys.session(profileId, inputSession.id),
-    ) ?? inputSession;
+    // The screen can hand over a task-list skeleton while hydration is
+    // still in flight; building the turn on that would persist a transcript
+    // with only the new messages. Always start from the full session.
+    let current = await loadFullSession(inputSession.id);
     if (sessionBusy(current)) {
       const queued = queueSubmission(current, prompt, clock);
       cacheSession(queued);
@@ -422,7 +519,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       await persistOrdered(failed).catch(() => failed);
       throw cause;
     }
-  }, [attachSession, cacheSession, daemon.activeProfile?.id, daemon.client, daemon.phase, persistOrdered, queryClient, removeRuntime, subscribe]);
+  }, [attachSession, cacheSession, daemon.activeProfile?.id, daemon.client, daemon.phase, loadFullSession, persistOrdered, queryClient, removeRuntime, subscribe]);
 
   useEffect(() => {
     sendPromptRef.current = sendPrompt;
