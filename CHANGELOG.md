@@ -16,6 +16,8 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+- Fix the OpenCode Resume list showing only sessions started outside a git checkout; it now lists sessions from every project
+
 ## 0.1.16
 
 - Import and continue conversations started in agent CLIs with `/resume` or the command palette across every provider, in both Waku and Waku Web

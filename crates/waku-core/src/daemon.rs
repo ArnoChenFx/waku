@@ -464,8 +464,11 @@ impl Backend for WakuBackend {
                     ProviderKind::Codex => {
                         crate::codex_session::list_provider_sessions(&binary, limit)?
                     }
-                    ProviderKind::Cursor | ProviderKind::Fx | ProviderKind::OpenCode => {
+                    ProviderKind::Cursor | ProviderKind::Fx => {
                         crate::acp_session::list_provider_sessions(provider, &binary, &[], limit)?
+                    }
+                    ProviderKind::OpenCode => {
+                        crate::opencode_session::list_provider_sessions(&binary, limit)?
                     }
                     ProviderKind::DeepSeek => {
                         crate::deepseek_session::list_provider_sessions(&binary, limit)?
