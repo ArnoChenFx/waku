@@ -15,10 +15,10 @@ import type { TranscriptMarkdownCache } from '@/md/transcript-cache';
 import { RowVeil } from '@/md/veil';
 
 /**
- * Markdown metrics — Zeron iOS's MD tokens (themselves the desktop's
- * render.rs values): body 14/22, headings 19/27 · 16/24 · 15/22 · 14/22,
- * code 12.5/18. Block-level vertical rhythm lives on the transcript rows
- * (`topGap`), so blocks carry no margins of their own.
+ * Markdown metrics — the desktop's render.rs values: body 14/22, headings
+ * 19/27 · 16/24 · 15/22 · 14/22, code 12.5/18. Block-level vertical rhythm
+ * lives on the transcript rows (`topGap`), so blocks carry no margins of their
+ * own.
  */
 export function useMarkdownStyles(): MarkdownStyles {
   const theme = useTheme();
@@ -44,7 +44,7 @@ export function useMarkdownStyles(): MarkdownStyles {
       em: { fontStyle: 'italic' },
       strikethrough: { color: theme.textSecondary, textDecorationLine: 'line-through' },
       // Monochrome links: primary ink with a muted hairline underline, never
-      // accent (Zeron / desktop render.rs).
+      // accent (desktop render.rs).
       link: {
         color: theme.text,
         textDecorationColor: theme.textTertiary,
@@ -100,7 +100,7 @@ export function useMarkdownStyles(): MarkdownStyles {
       },
       listContent: { flex: 1, gap: 4 },
       // Frameless tables: hairline row rules only — no outer border, no
-      // header fill, no cell borders (Zeron / desktop).
+      // header fill, no cell borders (desktop parity).
       table: {},
       tableRow: {
         borderBottomColor: theme.separator,
@@ -198,7 +198,7 @@ export const MdBlockSettled = memo(
 
 /**
  * The live tail block of the streaming message: renders the mended display
- * tail, dissolving appended text in via the veil. Zeron's gate applies — only
+ * tail, dissolving appended text in via the veil. The veil gate applies — only
  * paragraphs and headings veil; structural blocks (code, lists, tables)
  * appear settled-style.
  */

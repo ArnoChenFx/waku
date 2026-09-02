@@ -29,7 +29,7 @@ export interface SessionGroup {
 
 /**
  * One row = one markdown top-level block / user bubble / tool group / chip,
- * never one assistant message — Zeron's transcript row model. A streamed
+ * never one assistant message. A streamed
  * token re-renders exactly one row (the live tail block), and the list only
  * re-lays-out what changed. `topGap` is resolved at build time because it
  * depends on the previous row. `turnId` lets the list tell the running
@@ -68,7 +68,7 @@ export type TranscriptRow =
     }
   | { kind: 'changed'; key: string; turnId: string | null; checkpoint: Checkpoint; topGap: number };
 
-/** Zeron's spacing tokens: first row, message boundaries, tool boundaries,
+/** Spacing tokens: first row, message boundaries, tool boundaries,
  * sibling markdown blocks of one message. */
 const GAP_FIRST = 26;
 const GAP_TURN = 16;

@@ -187,7 +187,7 @@ describe('mobile session presentation', () => {
     ]);
   });
 
-  test('splits assistant messages into block rows with Zeron gaps', () => {
+  test('splits assistant messages into block rows with the spacing tokens', () => {
     const current = session({
       status: 'working',
       turns: [turn({ id: 'turn', status: 'running', started_at: 10, completed_at: null })],

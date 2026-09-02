@@ -238,7 +238,7 @@ function ChangedFilesCard({ checkpoint }: { checkpoint: Checkpoint }) {
   );
 }
 
-/** Zeron's WorkingIndicator flavour words, rotated every 7s, seeded per chat. */
+/** Working-indicator flavour words, rotated every 7s, seeded per chat. */
 const FLAVOUR_WORDS = [
   'Thinking', 'Pondering', 'Scheming', 'Brewing', 'Weaving', 'Tinkering',
   'Musing', 'Composing', 'Sifting', 'Untangling', 'Distilling', 'Sketching',

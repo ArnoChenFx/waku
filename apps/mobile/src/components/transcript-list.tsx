@@ -58,7 +58,7 @@ import {
 import type { MarkdownStyles } from '@/md/render';
 import { TranscriptMarkdownCache } from '@/md/transcript-cache';
 
-/** Zeron's content column cap (iPad). */
+/** Content column cap (iPad). */
 const MAX_CONTENT_WIDTH = 736;
 
 /** Longer than UIScrollView's animated scroll (~0.3 s) plus a frame. */

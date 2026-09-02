@@ -1,5 +1,5 @@
 /**
- * Per-session markdown parse cache — Zeron iOS's TranscriptBuilderCache.
+ * Per-session markdown parse cache.
  *
  * One incremental parser per *streaming* message (the tail re-parses
  * O(delta + tail) per commit and block node identities in the settled prefix
