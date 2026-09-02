@@ -196,6 +196,22 @@ impl Waku {
             })
     }
 
+    /// Whether the running turn was prompted — a provider-started wake has no
+    /// user message of its own.
+    pub(super) fn active_turn_has_user_message(&self, session_id: Uuid) -> bool {
+        self.state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| {
+                let turn_id = session.active_turn_id()?;
+                Some(session.messages.iter().any(|message| {
+                    message.turn_id == Some(turn_id) && message.role == MessageRole::User
+                }))
+            })
+            .unwrap_or(false)
+    }
+
     pub(super) fn accepts_turn_output(&mut self, session_id: Uuid) -> bool {
         // The turn begins at submission accept, before its prompt has reached
         // any provider. While preparation is still running, a reused runtime
@@ -278,10 +294,13 @@ impl Waku {
                         // a `/goal` began: the provider's start confirms it.
                         session.mark_active_turn_provider_started();
                         session.status = SessionStatus::Working;
-                    } else if session.provider == ProviderKind::Codex {
-                        // Codex starts turns on its own: goal continuation
-                        // pursues an active goal whenever the thread is
-                        // idle. Give the turn a transcript home — there is
+                    } else if matches!(session.provider, ProviderKind::Codex | ProviderKind::Claude)
+                    {
+                        // Some providers start turns on their own: Codex goal
+                        // continuation pursues an active goal whenever the
+                        // thread is idle, and Claude Code re-enters the model
+                        // once a backgrounded command, subagent or monitor
+                        // settles. Give the turn a transcript home — there is
                         // no user message for it — so its work streams in
                         // instead of being dropped.
                         session.begin_provider_turn();
@@ -289,6 +308,62 @@ impl Waku {
                         session.status = SessionStatus::Working;
                         self.state.mark_session_dirty(session_id);
                     }
+                }
+            }
+            DriverEvent::TurnParked => {
+                // The reply ended while detached work the provider will wake
+                // the session for is still running. The turn stays open for
+                // that wake; only its streaming state settles, and the session
+                // shows the wait instead of a finish. A prompted turn announces
+                // the wait once; a wake that parks again stays quiet.
+                if self
+                    .state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .and_then(AgentSession::active_turn_id)
+                    .is_none()
+                {
+                    return true;
+                }
+                self.settle_foreground_work(session_id, BackgroundWorkStatus::Completed);
+                let previous_kinds = self.snapshot_selected_transcript_rows(session_id);
+                let announce = cx.active_window().is_none()
+                    && !runtime.park_announced
+                    && self.active_turn_has_user_message(session_id);
+                let task_notification = announce
+                    .then(|| {
+                        self.state
+                            .sessions
+                            .iter()
+                            .find(|session| session.id == session_id)
+                            .map(|session| {
+                                if session.display_title() == AgentSession::DEFAULT_TITLE {
+                                    tr!("session.new_task")
+                                } else {
+                                    session.display_title().to_owned()
+                                }
+                            })
+                    })
+                    .flatten();
+                self.finish_streaming_assistant(session_id);
+                self.complete_turn_blocks(session_id);
+                runtime.stream_phase = None;
+                runtime.park_announced = true;
+                if let Some(session) = self.state.session_mut(session_id) {
+                    session.status = SessionStatus::Background;
+                    session.updated_at = unix_time();
+                }
+                if let Some(previous_kinds) = previous_kinds.as_deref() {
+                    self.splice_active_transcript_rows_after_visibility_change(previous_kinds);
+                }
+                if let Some(title) = task_notification {
+                    crate::platform::show_task_notification(
+                        &task_notification_tag(session_id),
+                        &title,
+                        &tr!("session.turn_waiting_background"),
+                        cx,
+                    );
                 }
             }
             DriverEvent::TextDelta(delta) => {
@@ -556,6 +631,7 @@ impl Waku {
                 self.finish_streaming_assistant(session_id);
                 self.complete_turn_blocks(session_id);
                 runtime.stream_phase = None;
+                runtime.park_announced = false;
                 let needs_fallback = !self.turn_has_assistant_message(session_id);
                 if let Some(session) = self.state.session_mut(session_id) {
                     session.status = if success {
@@ -673,10 +749,8 @@ impl Waku {
                     .take()
                     .unwrap_or_else(|| tr!("session.codex_exited_before_response"));
                 let should_finish_turn = if let Some(session) = self.state.session_mut(session_id)
-                    && matches!(
-                        session.status,
-                        SessionStatus::Connecting | SessionStatus::Working | SessionStatus::Waiting
-                    ) {
+                    && session.status.is_busy()
+                {
                     session.status = SessionStatus::Failed;
                     session.updated_at = unix_time();
                     if needs_fallback {
@@ -741,12 +815,7 @@ impl Waku {
 /// runtime attachment that missed `TurnStarted` cannot leave Cmd-Enter
 /// permanently falling back to the follow-up queue while output is visible.
 pub(super) fn session_accepts_turn_output(session: &mut AgentSession) -> bool {
-    if session.active_turn_id().is_none()
-        || !matches!(
-            session.status,
-            SessionStatus::Connecting | SessionStatus::Working | SessionStatus::Waiting
-        )
-    {
+    if session.active_turn_id().is_none() || !session.status.is_busy() {
         return false;
     }
     session.mark_active_turn_provider_started();

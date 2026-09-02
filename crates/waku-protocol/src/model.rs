@@ -665,12 +665,22 @@ pub enum SessionStatus {
     Connecting,
     Working,
     Waiting,
+    /// The turn is parked: the provider's reply ended, but detached work it
+    /// will wake the session for is still running — Claude Code re-enters the
+    /// model with a task notification once a backgrounded command, subagent
+    /// or monitor settles. The turn stays open for that wake. Busy, but the
+    /// provider is idle, so a new message steers straight in rather than
+    /// waiting in the follow-up queue.
+    Background,
     Failed,
 }
 
 impl SessionStatus {
     pub fn is_busy(self) -> bool {
-        matches!(self, Self::Connecting | Self::Working | Self::Waiting)
+        matches!(
+            self,
+            Self::Connecting | Self::Working | Self::Waiting | Self::Background
+        )
     }
 }
 
@@ -1755,6 +1765,10 @@ pub enum DriverEvent {
     /// dynamically registered commands.
     AvailableCommands(Vec<ReportedCommand>),
     TurnStarted,
+    /// The provider's turn ended while detached work it will wake the
+    /// session for is still running. The turn stays open — the wake's
+    /// `TurnStarted` continues it — and the session shows it is waiting.
+    TurnParked,
     TextDelta(String),
     ReasoningDelta(String),
     Activity {

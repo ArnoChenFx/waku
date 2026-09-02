@@ -466,6 +466,9 @@ function statusPresentation(
   if (session.status === 'waiting') {
     return { label: 'Needs input', color: theme.warning, spinner: false };
   }
+  if (session.status === 'background') {
+    return { label: 'Waiting for background tasks', color: theme.textSecondary, spinner: false };
+  }
   if (sessionBusy(session)) {
     return { label: 'Working', color: theme.success, spinner: true };
   }

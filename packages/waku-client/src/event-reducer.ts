@@ -96,13 +96,14 @@ export function reduceRuntimeEvent(
         turn.provider_turn_started = true
         session.status = 'working'
       } else if (
-        session.provider === 'codex'
-        && !['connecting', 'working', 'waiting'].includes(session.status)
+        (session.provider === 'codex' || session.provider === 'claude')
+        && !['connecting', 'working', 'waiting', 'background'].includes(session.status)
       ) {
-        // Codex starts turns on its own: goal continuation pursues an active
-        // goal whenever the thread is idle. Give the turn a transcript home —
-        // there is no user message for it — so its work streams in instead of
-        // being dropped.
+        // Some providers start turns on their own: Codex goal continuation
+        // pursues an active goal whenever the thread is idle, and Claude Code
+        // re-enters the model once a backgrounded command, subagent or monitor
+        // settles. Give the turn a transcript home — there is no user message
+        // for it — so its work streams in instead of being dropped.
         session.turns.push({
           id: clock.randomUUID(),
           turn_count: session.turns.length + 1,
@@ -115,6 +116,16 @@ export function reduceRuntimeEvent(
         })
         session.status = 'working'
       }
+      break
+    }
+    case 'turnParked': {
+      // The provider's reply ended while detached work it will wake the
+      // session for still runs. The turn stays open for that wake; only the
+      // streaming state settles.
+      if (!activeTurn(session)) break
+      finishStreamingMessages(session)
+      completeActivities(session)
+      session.status = 'background'
       break
     }
     case 'textDelta':
@@ -234,7 +245,7 @@ export function reduceRuntimeEvent(
         && !session.messages.some((message) => message.turn_id === pursuit.id)
       ) {
         session.turns.pop()
-        if (['connecting', 'working', 'waiting'].includes(session.status)) {
+        if (['connecting', 'working', 'waiting', 'background'].includes(session.status)) {
           session.status = 'idle'
         }
         break
@@ -510,7 +521,7 @@ function activeTurn(session: AgentSession) {
 function acceptsTurnOutput(session: AgentSession) {
   return Boolean(
     activeTurn(session)
-      && ['connecting', 'working', 'waiting'].includes(session.status),
+      && ['connecting', 'working', 'waiting', 'background'].includes(session.status),
   )
 }
 

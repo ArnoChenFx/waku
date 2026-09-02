@@ -861,6 +861,9 @@ struct SessionRuntime {
     /// accepted/rejected acknowledgement, in transport order.
     pending_steers: VecDeque<ComposerSubmission>,
     stream_phase: Option<StreamPhase>,
+    /// The parked-turn notification has fired for the turn in flight, so a
+    /// wake that parks again does not repeat it. Cleared when the turn ends.
+    park_announced: bool,
     stream_remeasure_pending: bool,
     pending_permission: Option<PendingPermission>,
     pending_user_input: Option<PendingUserInput>,
