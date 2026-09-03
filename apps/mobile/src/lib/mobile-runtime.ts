@@ -127,7 +127,10 @@ export function queueSubmission(
 
 export function sessionBusy(session: Pick<AgentSession, 'status'>): boolean {
   return (
-    session.status === 'connecting' || session.status === 'working' || session.status === 'waiting'
+    session.status === 'connecting'
+    || session.status === 'working'
+    || session.status === 'waiting'
+    || session.status === 'background'
   );
 }
 

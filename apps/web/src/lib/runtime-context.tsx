@@ -814,7 +814,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       // unwound pursuit.
       const activating = operation.kind === 'set' && operation.status === 'active'
       const objective = operation.kind === 'set' ? operation.objective : null
-      const idle = !['connecting', 'working', 'waiting'].includes(currentSession.status)
+      const idle = !['connecting', 'working', 'waiting', 'background'].includes(currentSession.status)
         && currentSession.turns.at(-1)?.status !== 'running'
       const now = Math.floor(Date.now() / 1_000)
       let restoreOnFailure: AgentSession | null = null

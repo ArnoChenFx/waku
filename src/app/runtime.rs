@@ -2903,6 +2903,7 @@ impl Waku {
                 pending_events: VecDeque::new(),
                 pending_steers: VecDeque::new(),
                 stream_phase: None,
+                park_announced: false,
                 stream_remeasure_pending: false,
                 pending_permission: None,
                 pending_user_input: None,
@@ -2936,6 +2937,13 @@ impl Waku {
             return;
         };
         if self.response_fork_preparations.contains_key(&session.id) {
+            return;
+        }
+        if session.status == SessionStatus::Background {
+            // The turn is parked on detached work and the provider is idle,
+            // so the message goes straight in as a steer: queued, it would
+            // wait for a settle that only the message itself could hasten.
+            self.steer_composer_submission(submission, cx);
             return;
         }
         if session.is_busy() {

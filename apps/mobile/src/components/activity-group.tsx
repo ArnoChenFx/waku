@@ -9,13 +9,17 @@ import {
   activityRowDetail,
 } from '@waku/client/transcript-presentation';
 import type { SymbolViewProps } from 'expo-symbols';
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useReducer, useRef, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppSymbol } from './app-symbol';
 import { DiffView } from './diff-view';
+import { useRowAnchor } from './transcript-anchor';
 import { MonoFont, NativeTint } from '@/constants/theme';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useTheme } from '@/hooks/use-theme';
+import { applyAlpha } from '@/md/color';
+import { RowVeil, splitRunAtSpans } from '@/md/veil';
 
 const ACTIVITY_ICONS: Record<ActivityKind, SymbolViewProps['name']> = {
   reasoning: { ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' },
@@ -43,6 +47,7 @@ export const ActivityGroup = memo(function ActivityGroup({
   live: boolean;
 }) {
   const theme = useTheme();
+  const keepTop = useRowAnchor();
   const activities = activitiesForBlock(block);
   const [expanded, setExpanded] = useState(live);
   useEffect(() => {
@@ -54,7 +59,7 @@ export const ActivityGroup = memo(function ActivityGroup({
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded }}
-        onPress={() => setExpanded((value) => !value)}
+        onPress={() => keepTop(() => setExpanded((value) => !value))}
         style={({ pressed }) => [styles.groupHeader, { opacity: pressed ? 0.6 : 1 }]}>
         <Text numberOfLines={1} style={[styles.groupTitle, { color: theme.textSecondary }]}>
           {activityHeaderTitle(activities, live)}
@@ -80,6 +85,7 @@ export const ActivityGroup = memo(function ActivityGroup({
 
 function ActivityRow({ activity }: { activity: ActivityItem }) {
   const theme = useTheme();
+  const keepTop = useRowAnchor();
   const reasoningContent = activity.reasoning?.content.trim() ?? '';
   const sections = activity.reasoning ? [] : activityDisclosureSections(activity);
   const changes = activity.file_changes ?? [];
@@ -101,7 +107,7 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
         accessibilityRole={hasDetail ? 'button' : 'text'}
         accessibilityState={hasDetail ? { expanded } : undefined}
         disabled={!hasDetail}
-        onPress={() => setExpanded((value) => !value)}
+        onPress={() => keepTop(() => setExpanded((value) => !value))}
         style={({ pressed }) => [
           styles.cardHeader,
           { backgroundColor: pressed && hasDetail ? theme.overlay : 'transparent' },
@@ -133,9 +139,7 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
       {expanded && hasDetail && (
         <View style={[styles.cardBody, { borderTopColor: theme.border }]}>
           {reasoningRow ? (
-            <Text selectable style={[styles.reasoningText, { color: theme.textSecondary }]}>
-              {plainReasoning(reasoningContent)}
-            </Text>
+            <ReasoningText content={plainReasoning(reasoningContent)} live={!activity.complete} />
           ) : (
             <>
               {sections.map((section) => (
@@ -168,6 +172,36 @@ function ActivityRow({ activity }: { activity: ActivityItem }) {
         </View>
       )}
     </View>
+  );
+}
+
+/** Streaming reasoning dissolves in like the desktop's strided reasoning
+ * veil: appended text fades at half the message veil's tick rate, and text
+ * present at mount is adopted at full opacity. */
+function ReasoningText({ content, live }: { content: string; live: boolean }) {
+  const theme = useTheme();
+  const reducedMotion = useReducedMotion();
+  const veil = useRef<RowVeil | null>(null);
+  veil.current ??= new RowVeil(content.length > 0);
+  const [, bump] = useReducer((count: number) => count + 1, 0);
+  const spans = live && !reducedMotion ? veil.current.advance(0, content, Date.now()) : [];
+  useEffect(() => {
+    if (!spans.length) return;
+    const timer = setTimeout(bump, 66);
+    return () => clearTimeout(timer);
+  });
+  return (
+    <Text selectable style={[styles.reasoningText, { color: theme.textSecondary }]}>
+      {splitRunAtSpans(0, content.length, spans).map(([start, end, opacity]) =>
+        opacity >= 1 ? (
+          content.slice(start, end)
+        ) : (
+          <Text key={start} style={{ color: applyAlpha(theme.textSecondary, opacity) }}>
+            {content.slice(start, end)}
+          </Text>
+        ),
+      )}
+    </Text>
   );
 }
 
@@ -210,6 +244,7 @@ function ActivityState({
 
 function FileChangeRow({ change }: { change: ActivityFileChange }) {
   const theme = useTheme();
+  const keepTop = useRowAnchor();
   const [open, setOpen] = useState(false);
   const hasDiff = Boolean(change.diff?.trim());
   const statusColor = change.status === 'added'
@@ -223,7 +258,7 @@ function FileChangeRow({ change }: { change: ActivityFileChange }) {
         accessibilityRole={hasDiff ? 'button' : 'text'}
         accessibilityState={hasDiff ? { expanded: open } : undefined}
         disabled={!hasDiff}
-        onPress={() => setOpen((value) => !value)}
+        onPress={() => keepTop(() => setOpen((value) => !value))}
         style={({ pressed }) => [styles.fileRow, { opacity: pressed ? 0.6 : 1 }]}>
         <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
         <Text numberOfLines={1} style={[styles.filePath, { color: theme.text }]}>
