@@ -138,7 +138,7 @@ pub(crate) fn any_live(binary: &Path) -> Option<PooledServer> {
     let slots = {
         let pool = pool().lock().unwrap();
         pool.iter()
-            .filter(|((pooled_binary, _), _)| pooled_binary == binary)
+            .filter(|((pooled_binary, _, _), _)| pooled_binary == binary)
             .map(|(_, slot)| Arc::clone(slot))
             .collect::<Vec<_>>()
     };

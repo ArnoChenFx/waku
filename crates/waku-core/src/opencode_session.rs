@@ -45,6 +45,7 @@ pub fn list_provider_sessions(
         None => crate::opencode_pool::acquire(
             binary,
             &crate::acp_session::catalog_working_directory()?,
+            &[],
         )?,
     };
     let response = server.request(
