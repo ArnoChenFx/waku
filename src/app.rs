@@ -63,7 +63,7 @@ use crate::theme::{Theme, ThemePreference, sp};
 use crate::ui::text_field::TextField;
 use crate::ui::{
     MenuChip, ProjectNameSelector, activity_icon, activity_noun, contain_scroll, file_icon, icon,
-    icon_button, motion, provider_color, provider_icon, status_color, toggle_switch,
+    icon_button, motion, provider_color, provider_mark, status_color, toggle_switch,
 };
 use crate::{
     CancelTaskSwitch, CancelTurn, CloseFind, CloseWindow, ConfirmTaskSwitch, CopySelection,
@@ -1603,11 +1603,11 @@ mod background_work;
 mod branches;
 mod command_palette;
 mod commit_dialog;
-mod goal_dialog;
 mod components;
 mod composer;
 mod drafts;
 mod file_search;
+mod goal_dialog;
 mod image_preview;
 mod render;
 mod right_panel;
@@ -1631,8 +1631,8 @@ use background_work::{
 };
 pub use command_palette::init as init_command_palette;
 pub use commit_dialog::init as init_commit_dialog_keys;
-pub use goal_dialog::init as init_goal_dialog_keys;
 use components::*;
+pub use goal_dialog::init as init_goal_dialog_keys;
 pub use image_preview::init as init_image_preview_keys;
 pub use settings::init as init_settings_keys;
 pub use sidebar::init as init_sidebar_keys;
@@ -1966,10 +1966,8 @@ impl Waku {
         });
 
         let composer = cx.new(|cx| ComposerInput::new(window, cx).padding_x(px(14.0), cx));
-        let user_input_answer = cx.new(|cx| {
-            TextInput::new(window, cx)
-                .placeholder(tr!("user_input.other_placeholder"))
-        });
+        let user_input_answer = cx
+            .new(|cx| TextInput::new(window, cx).placeholder(tr!("user_input.other_placeholder")));
         let command_palette_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
@@ -2022,14 +2020,10 @@ impl Waku {
                 .select_all_on_focus_click()
                 .placeholder(tr!("input.detected_automatically"))
         });
-        let usage_project_filter = cx.new(|cx| {
-            TextInput::new(window, cx)
-                .placeholder(tr!("input.filter_projects"))
-        });
-        let right_panel_diff_filter = cx.new(|cx| {
-            TextInput::new(window, cx)
-                .placeholder(tr!("diff.filter_files"))
-        });
+        let usage_project_filter =
+            cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("input.filter_projects")));
+        let right_panel_diff_filter =
+            cx.new(|cx| TextInput::new(window, cx).placeholder(tr!("diff.filter_files")));
         let navigation_rail = cx.new(|_| ConversationNavigationRail::new());
         let sidebar_pane = WakuPane::new(Waku::sidebar_pane_content, cx);
         let transcript_pane = WakuPane::new(Waku::transcript_pane_content, cx);
@@ -2561,14 +2555,11 @@ impl Waku {
                 )
                 .detach();
             }
-            cx.subscribe(
-                &skills_search,
-                |_: &mut Self, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Edited) {
-                        cx.notify();
-                    }
-                },
-            )
+            cx.subscribe(&skills_search, |_: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Edited) {
+                    cx.notify();
+                }
+            })
             .detach();
             cx.subscribe(
                 &session_rename_input,

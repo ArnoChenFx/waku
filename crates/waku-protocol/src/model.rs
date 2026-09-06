@@ -18,6 +18,7 @@ pub enum ProviderKind {
     DeepSeek,
     Fx,
     OpenCode,
+    OpenCode2,
     Grok,
     Kimi,
     OhMyPi,
@@ -25,7 +26,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Amp,
         Self::Claude,
         Self::Codex,
@@ -33,6 +34,7 @@ impl ProviderKind {
         Self::DeepSeek,
         Self::Fx,
         Self::OpenCode,
+        Self::OpenCode2,
         Self::Grok,
         Self::Kimi,
         Self::OhMyPi,
@@ -48,6 +50,7 @@ impl ProviderKind {
             Self::DeepSeek => "deepseek",
             Self::Fx => "fx",
             Self::OpenCode => "opencode",
+            Self::OpenCode2 => "opencode2",
             Self::Grok => "grok",
             Self::Kimi => "kimi",
             Self::OhMyPi => "ohmypi",
@@ -64,6 +67,7 @@ impl ProviderKind {
             Self::DeepSeek => "DeepSeek Harness",
             Self::Fx => "Fx",
             Self::OpenCode => "OpenCode",
+            Self::OpenCode2 => "OpenCode 2",
             Self::Grok => "Grok Build",
             Self::Kimi => "Kimi Code",
             Self::OhMyPi => "Oh My Pi",
@@ -80,6 +84,7 @@ impl ProviderKind {
             Self::DeepSeek => "DeepSeek",
             Self::Fx => "Fx",
             Self::OpenCode => "OpenCode",
+            Self::OpenCode2 => "OpenCode 2",
             Self::Grok => "Grok",
             Self::Kimi => "Kimi",
             Self::OhMyPi => "Oh My Pi",
@@ -98,6 +103,7 @@ impl ProviderKind {
             Self::DeepSeek => "dsh",
             Self::Fx => "fx",
             Self::OpenCode => "opencode",
+            Self::OpenCode2 => "opencode2",
             Self::Grok => "grok",
             Self::Kimi => "kimi",
             Self::OhMyPi => "omp",
@@ -119,6 +125,7 @@ impl ProviderKind {
                 | Self::Cursor
                 | Self::DeepSeek
                 | Self::OpenCode
+                | Self::OpenCode2
                 | Self::Grok
                 | Self::OhMyPi
                 | Self::Pi
@@ -134,6 +141,7 @@ impl ProviderKind {
                 | Self::Cursor
                 | Self::DeepSeek
                 | Self::OpenCode
+                | Self::OpenCode2
                 | Self::Grok
                 | Self::OhMyPi
                 | Self::Pi
@@ -149,6 +157,7 @@ impl ProviderKind {
                 | Self::DeepSeek
                 | Self::Fx
                 | Self::OpenCode
+                | Self::OpenCode2
                 | Self::Grok
                 | Self::Kimi
                 | Self::OhMyPi
@@ -184,6 +193,11 @@ pub enum ProviderResumeCursor {
     },
     OpenCode {
         session_id: String,
+    },
+    OpenCode2 {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
     },
     DeepSeek {
         session_id: String,
@@ -228,6 +242,10 @@ impl ProviderResumeCursor {
             ProviderKind::DeepSeek => Self::DeepSeek { session_id: id },
             ProviderKind::Fx => Self::Fx { session_id: id },
             ProviderKind::OpenCode => Self::OpenCode { session_id: id },
+            ProviderKind::OpenCode2 => Self::OpenCode2 {
+                session_id: id,
+                directory: None,
+            },
             ProviderKind::Grok => Self::Grok { session_id: id },
             ProviderKind::Kimi => Self::Kimi { session_id: id },
             ProviderKind::OhMyPi => Self::OhMyPi {
@@ -250,6 +268,7 @@ impl ProviderResumeCursor {
             Self::DeepSeek { .. } => ProviderKind::DeepSeek,
             Self::Fx { .. } => ProviderKind::Fx,
             Self::OpenCode { .. } => ProviderKind::OpenCode,
+            Self::OpenCode2 { .. } => ProviderKind::OpenCode2,
             Self::Grok { .. } => ProviderKind::Grok,
             Self::Kimi { .. } => ProviderKind::Kimi,
             Self::OhMyPi { .. } => ProviderKind::OhMyPi,
@@ -265,6 +284,7 @@ impl ProviderResumeCursor {
             | Self::DeepSeek { session_id }
             | Self::Fx { session_id }
             | Self::OpenCode { session_id }
+            | Self::OpenCode2 { session_id, .. }
             | Self::Grok { session_id }
             | Self::Kimi { session_id }
             | Self::OhMyPi { session_id, .. }
@@ -881,7 +901,11 @@ pub struct ThreadGoal {
 /// come back asynchronously as [`DriverEvent::GoalUpdated`]; failures surface
 /// through [`DriverEvent::Error`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GoalOperation {
     /// Re-read the provider's current goal without changing it.
     Refresh,
@@ -4066,6 +4090,8 @@ mod tests {
         assert_eq!(ProviderKind::DeepSeek.command(), "dsh");
         assert_eq!(ProviderKind::Fx.command(), "fx");
         assert_eq!(ProviderKind::OpenCode.command(), "opencode");
+        assert_eq!(ProviderKind::OpenCode2.id(), "opencode2");
+        assert_eq!(ProviderKind::OpenCode2.command(), "opencode2");
         assert_eq!(ProviderKind::Grok.command(), "grok");
         assert_eq!(ProviderKind::Pi.command(), "pi");
     }
@@ -4079,6 +4105,7 @@ mod tests {
             ProviderKind::Cursor,
             ProviderKind::DeepSeek,
             ProviderKind::OpenCode,
+            ProviderKind::OpenCode2,
             ProviderKind::Grok,
             ProviderKind::Pi,
         ] {
@@ -4100,8 +4127,59 @@ mod tests {
         assert!(ProviderKind::DeepSeek.supports_model_discovery());
         assert!(ProviderKind::Fx.supports_model_discovery());
         assert!(ProviderKind::OpenCode.supports_model_discovery());
+        assert!(ProviderKind::OpenCode2.supports_model_discovery());
         assert!(ProviderKind::Grok.supports_model_discovery());
         assert!(ProviderKind::Pi.supports_model_discovery());
+    }
+
+    #[test]
+    fn opencode2_cursor_round_trips_with_its_wire_tag() {
+        let cursor =
+            ProviderResumeCursor::from_session_id(ProviderKind::OpenCode2, "ses_abc".into());
+        let json = serde_json::to_string(&cursor).unwrap();
+        assert!(json.contains("\"provider\":\"openCode2\""), "{json}");
+        assert!(json.contains("\"sessionId\":\"ses_abc\""), "{json}");
+        assert_eq!(cursor.provider(), ProviderKind::OpenCode2);
+        assert_eq!(cursor.native_id(), "ses_abc");
+        assert_eq!(
+            serde_json::to_value(ProviderKind::OpenCode2).unwrap(),
+            serde_json::json!("openCode2")
+        );
+    }
+
+    /// OpenCode 2 must not share v1's cursor variant: every driver asserts
+    /// `cursor.provider() == provider` before resuming, and a shared variant
+    /// would let a v1 session resume against the v2 server.
+    #[test]
+    fn opencode_cursors_are_distinct_per_major_version() {
+        let v1 = ProviderResumeCursor::from_session_id(ProviderKind::OpenCode, "ses_x".into());
+        let v2 = ProviderResumeCursor::from_session_id(ProviderKind::OpenCode2, "ses_x".into());
+        assert_ne!(v1.provider(), v2.provider());
+        assert_ne!(
+            serde_json::to_value(&v1).unwrap(),
+            serde_json::to_value(&v2).unwrap()
+        );
+    }
+
+    #[test]
+    fn all_contains_every_provider_kind() {
+        assert_eq!(ProviderKind::ALL.len(), 12);
+        let ids: std::collections::HashSet<_> =
+            ProviderKind::ALL.iter().map(|kind| kind.id()).collect();
+        assert_eq!(
+            ids.len(),
+            ProviderKind::ALL.len(),
+            "duplicate ProviderKind::id()"
+        );
+        let commands: std::collections::HashSet<_> = ProviderKind::ALL
+            .iter()
+            .map(|kind| kind.command())
+            .collect();
+        assert_eq!(
+            commands.len(),
+            ProviderKind::ALL.len(),
+            "duplicate ProviderKind::command()"
+        );
     }
 
     #[test]

@@ -157,12 +157,8 @@ impl DeepSeekDriver {
 
         let baseline = fetch_history(&server, &session_id)
             .context("could not read DeepSeek Harness session history")?;
-        normalize_legacy_read_only_mode(
-            &server,
-            &session_id,
-            baseline.projection_values.as_ref(),
-        )
-        .context("could not normalize the DeepSeek Harness session")?;
+        normalize_legacy_read_only_mode(&server, &session_id, baseline.projection_values.as_ref())
+            .context("could not normalize the DeepSeek Harness session")?;
         let available_commands = fetch_commands(&server, &session_id)
             .context("could not read DeepSeek Harness commands")?;
         let command_names = available_commands

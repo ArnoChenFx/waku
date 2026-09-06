@@ -310,7 +310,10 @@ impl Waku {
                         // a `/goal` began: the provider's start confirms it.
                         session.mark_active_turn_provider_started();
                         session.status = SessionStatus::Working;
-                    } else if matches!(session.provider, ProviderKind::Codex | ProviderKind::Claude)
+                    } else if matches!(
+                        session.provider,
+                        ProviderKind::Codex | ProviderKind::Claude | ProviderKind::OpenCode2
+                    )
                     {
                         // Some providers start turns on their own: Codex goal
                         // continuation pursues an active goal whenever the

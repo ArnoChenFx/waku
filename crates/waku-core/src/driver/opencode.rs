@@ -12,10 +12,8 @@
 //! document and event stream, not guessed.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::io::{BufRead, BufReader};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -25,9 +23,11 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use super::activity;
+use super::support::{OpenCodePermissionRequest, OpenCodePermissionState, permission_responses};
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
+use crate::http_wire::{Endpoint, StreamControl, open_event_stream};
 use crate::model::{
     ActivityKind, DriverEvent, PermissionOption, ProviderResumeCursor, RuntimeMode,
     UserInputAnswer, UserInputOption, UserInputQuestion,
@@ -54,13 +54,20 @@ enum CommandMessage {
 
 /// The prompt body both turn starts and steers post; the model rides on every
 /// prompt because the server has no session-level model setting.
-fn prompt_body(text: &str, model: Option<&str>, agent: &str) -> Value {
+///
+/// `variant` is how OpenCode expresses reasoning effort — the same ids the
+/// model catalogue advertises from each model's `variants` map — and it is a
+/// sibling of `model`, not a field inside it.
+fn prompt_body(text: &str, model: Option<&str>, variant: Option<&str>, agent: &str) -> Value {
     let mut body = json!({
         "agent": agent,
         "parts": [{"type": "text", "text": text}]
     });
     if let Some((provider_id, model_id)) = model.and_then(|model| model.split_once('/')) {
         body["model"] = json!({"providerID": provider_id, "modelID": model_id});
+    }
+    if let Some(variant) = variant.map(str::trim).filter(|variant| !variant.is_empty()) {
+        body["variant"] = json!(variant);
     }
     body
 }
@@ -90,7 +97,7 @@ pub struct OpenCodeDriver {
     session_id: String,
     commands: Sender<CommandMessage>,
     permissions: Arc<Mutex<OpenCodePermissionState>>,
-    event_stream: Arc<OpenCodeEventStreamControl>,
+    event_stream: Arc<StreamControl>,
     mode: RuntimeMode,
     computer_use: Option<super::support::HeadlessComputerUseRuntime>,
 }
@@ -102,7 +109,7 @@ impl OpenCodeDriver {
             cwd,
             mode,
             model,
-            reasoning_effort: _,
+            reasoning_effort,
             service_tier: _,
             context_window: _,
             agent_preset: _,
@@ -264,7 +271,7 @@ impl OpenCodeDriver {
         let (commands, command_rx) = unbounded();
         let turn_active = Arc::new(Mutex::new(false));
         let permissions = Arc::new(Mutex::new(OpenCodePermissionState::default()));
-        let event_stream = Arc::new(OpenCodeEventStreamControl::default());
+        let event_stream = Arc::new(StreamControl::default());
 
         // The reader holds only the port, never a server handle: the stream
         // closes exactly when the process exits, so a handle held here would
@@ -288,7 +295,7 @@ impl OpenCodeDriver {
                 // The server-wide stream, not a per-session one: the scoped
                 // route exists only under `/api`, and the workspace server
                 // may carry other sessions' traffic, so filter by session id.
-                match open_event_stream(stream_port, "/event", &stream_control) {
+                match open_event_stream(&Endpoint::local(stream_port), "/event", &stream_control) {
                     Ok(Some(stream)) => {
                         // The stream is live before this snapshot is read, so
                         // a request can neither fall between the two nor be
@@ -359,6 +366,7 @@ impl OpenCodeDriver {
 
         let worker_server = server.clone();
         let worker_session = session_id.clone();
+        let variant = reasoning_effort;
         let worker_events = events;
         let worker_turn = turn_active;
         thread::Builder::new()
@@ -379,7 +387,7 @@ impl OpenCodeDriver {
                                 "/session/{}/prompt_async",
                                 encode_path_segment(&worker_session)
                             );
-                            let body = prompt_body(&text, model.as_deref(), agent);
+                            let body = prompt_body(&text, model.as_deref(), variant.as_deref(), agent);
                             if let Err(error) = worker_server.request("POST", &path, Some(&body)) {
                                 let _ = worker_events.send(DriverEvent::Error(tr!(
                                     "errors.provider_rejected_prompt_detail",
@@ -424,7 +432,7 @@ impl OpenCodeDriver {
                                 "/session/{}/prompt_async",
                                 encode_path_segment(&worker_session)
                             );
-                            let body = prompt_body(&text, model.as_deref(), agent);
+                            let body = prompt_body(&text, model.as_deref(), variant.as_deref(), agent);
                             match worker_server.request("POST", &path, Some(&body)) {
                                 Ok(_) => {
                                     let _ = worker_events
@@ -587,99 +595,40 @@ impl Drop for OpenCodeDriver {
     }
 }
 
-#[derive(Default)]
-struct OpenCodeEventStreamControl {
-    cancelled: AtomicBool,
-    socket: Mutex<Option<TcpStream>>,
-}
-
-impl OpenCodeEventStreamControl {
-    fn attach(&self, stream: &TcpStream) -> std::io::Result<bool> {
-        let socket = stream.try_clone()?;
-        let mut active = self.socket.lock();
-        if self.cancelled.load(Ordering::Acquire) {
-            let _ = socket.shutdown(Shutdown::Both);
-            return Ok(false);
-        }
-        *active = Some(socket);
-        Ok(true)
-    }
-
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-        if let Some(socket) = self.socket.lock().take() {
-            let _ = socket.shutdown(Shutdown::Both);
-        }
-    }
-
-    fn clear(&self) {
-        self.socket.lock().take();
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
-    }
-}
-
-/// Opens the server-sent event stream and leaves it open.
+/// Reads the human-readable text out of a `session.error` event.
 ///
-/// The shared request helper reads a whole response before returning, which a
-/// stream never finishes doing.
-fn open_event_stream(
-    port: u16,
-    path: &str,
-    control: &OpenCodeEventStreamControl,
-) -> anyhow::Result<Option<TcpStream>> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port))
-        .with_context(|| format!("could not connect to OpenCode on local port {port}"))?;
-    // Register before reading the response head too. If this driver is dropped
-    // while setup is blocked, cancellation can still close the socket and wake
-    // the reader even though another pooled session keeps the server alive.
-    if !control.attach(&stream)? {
-        return Ok(None);
-    }
-    // Closing a cloned socket does not reliably wake a blocking read on every
-    // Windows TCP stack. Poll during response setup so cancellation has a
-    // platform-independent upper bound even when the server never replies.
-    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
-    )?;
-    stream.flush()?;
-    // Consume exactly the response head. A BufReader could read ahead into the
-    // first event and lose those buffered bytes when it is dropped here.
-    let mut response_head = Vec::new();
-    let mut byte = [0_u8; 1];
-    loop {
-        match stream.read(&mut byte) {
-            Ok(0) => return Err(anyhow!("OpenCode closed the event stream during setup")),
-            Ok(_) => {
-                response_head.push(byte[0]);
-                if response_head.ends_with(b"\r\n\r\n") || response_head.ends_with(b"\n\n") {
-                    break;
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                if control.is_cancelled() {
-                    return Ok(None);
-                }
-            }
-            Err(error) => {
-                if control.is_cancelled() {
-                    return Ok(None);
-                }
-                return Err(error.into());
-            }
-        }
-    }
-    stream.set_read_timeout(None)?;
-    Ok(Some(stream))
+/// Every OpenCode error is wrapped as `{name, data: {message}}` — verified
+/// against the live 1.18 `/doc` schema, where all eight `session.error`
+/// members (`ProviderAuthError`, `APIError`, `ContextOverflowError`,
+/// `ContentFilterError`, `MessageAbortedError`, `MessageOutputLengthError`,
+/// `StructuredOutputError`, `UnknownError`) share that shape. Reading
+/// `/error/message` therefore never matched, and every failure — an expired
+/// login, a billing stop, a context overflow — surfaced as the same bare
+/// "OpenCode reported an error" with the real cause discarded.
+fn session_error_message(properties: &Value) -> String {
+    let error = properties.get("error");
+    error
+        .and_then(|error| {
+            error
+                .pointer("/data/message")
+                .or_else(|| error.get("message"))
+                .or_else(|| properties.get("message"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+        // `MessageOutputLengthError` carries an empty `data`, so its name is
+        // the only thing that says what went wrong.
+        .or_else(|| {
+            error
+                .and_then(|error| error.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| tr!("errors.provider_reported_error", provider = "OpenCode"))
 }
 
 #[derive(Default)]
@@ -694,79 +643,6 @@ struct OpenCodeStreamState {
 struct OpenCodeUsageMetadata {
     model_context_windows: Mutex<HashMap<String, u64>>,
     last_model: Mutex<Option<String>>,
-}
-
-#[derive(Clone, Debug)]
-struct OpenCodePermissionRequest {
-    permission: String,
-    patterns: Vec<String>,
-    always: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct OpenCodePermissionRule {
-    permission: String,
-    pattern: String,
-}
-
-#[derive(Default)]
-struct OpenCodePermissionState {
-    pending: HashMap<String, OpenCodePermissionRequest>,
-    responding: HashSet<String>,
-    approved: HashSet<OpenCodePermissionRule>,
-}
-
-impl OpenCodePermissionState {
-    fn is_approved(&self, request: &OpenCodePermissionRequest) -> bool {
-        !request.patterns.is_empty()
-            && request.patterns.iter().all(|pattern| {
-                self.approved.iter().any(|rule| {
-                    opencode_wildcard_matches(&request.permission, &rule.permission)
-                        && opencode_wildcard_matches(pattern, &rule.pattern)
-                })
-            })
-    }
-
-    fn remember(&mut self, request: &OpenCodePermissionRequest) {
-        // Mirror OpenCode's own `always` handling exactly: only provider-
-        // supplied reusable patterns become rules. An empty list deliberately
-        // resolves the current request without broadening future access.
-        self.approved
-            .extend(request.always.iter().map(|pattern| OpenCodePermissionRule {
-                permission: request.permission.clone(),
-                pattern: pattern.clone(),
-            }));
-    }
-}
-
-fn opencode_wildcard_matches(input: &str, pattern: &str) -> bool {
-    let input = input.replace('\\', "/");
-    let pattern = pattern.replace('\\', "/");
-    if pattern
-        .strip_suffix(" *")
-        .is_some_and(|prefix| input == prefix)
-    {
-        return true;
-    }
-
-    let input = input.chars().collect::<Vec<_>>();
-    let mut previous = vec![false; input.len() + 1];
-    previous[0] = true;
-    for token in pattern.chars() {
-        let mut current = vec![false; input.len() + 1];
-        if token == '*' {
-            current[0] = previous[0];
-        }
-        for index in 1..=input.len() {
-            current[index] = match token {
-                '*' => previous[index] || current[index - 1],
-                '?' => previous[index - 1],
-                literal => previous[index - 1] && literal == input[index - 1],
-            };
-        }
-        previous = current;
-    }
-    previous[input.len()]
 }
 
 impl OpenCodeUsageMetadata {
@@ -942,12 +818,7 @@ fn handle_event(
             }
         }
         "session.error" => {
-            let message = properties
-                .pointer("/error/message")
-                .or_else(|| properties.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("OpenCode reported an error");
-            let _ = events.send(DriverEvent::Error(message.to_owned()));
+            let _ = events.send(DriverEvent::Error(session_error_message(properties)));
         }
         "session.updated" => {
             let title = properties
@@ -1203,48 +1074,6 @@ fn request_permission(
     });
 }
 
-fn permission_responses(
-    permissions: &Mutex<OpenCodePermissionState>,
-    request_id: &str,
-    option_id: &str,
-) -> Vec<(String, String)> {
-    let mut permissions = permissions.lock();
-    let request = permissions.pending.remove(request_id);
-    if option_id != "always" {
-        permissions.responding.insert(request_id.to_owned());
-        return vec![(request_id.to_owned(), option_id.to_owned())];
-    }
-
-    if let Some(request) = request.as_ref() {
-        permissions.remember(request);
-    }
-    // OpenCode normally applies an `always` reply to other matching requests
-    // already pending in the same session. Preserve that behavior locally,
-    // but send every provider reply as one-shot so the shared server's cache
-    // remains untouched.
-    let additional = permissions
-        .pending
-        .iter()
-        .filter(|(_, request)| permissions.is_approved(request))
-        .map(|(request_id, _)| request_id.clone())
-        .collect::<Vec<_>>();
-    for request_id in &additional {
-        permissions.pending.remove(request_id);
-    }
-
-    let responses = std::iter::once((request_id.to_owned(), "once".into()))
-        .chain(
-            additional
-                .into_iter()
-                .map(|request_id| (request_id, "once".into())),
-        )
-        .collect::<Vec<_>>();
-    permissions
-        .responding
-        .extend(responses.iter().map(|(request_id, _)| request_id.clone()));
-    responses
-}
-
 fn tool_activity(part: &Value, events: &impl DriverEventSink, state: &mut OpenCodeStreamState) {
     let wire_title = part
         .get("tool")
@@ -1332,6 +1161,7 @@ mod tests {
             prompt_body(
                 "Inspect the failure",
                 Some("opencode-go/deepseek-v4-flash"),
+                None,
                 "build",
             ),
             json!({
@@ -1343,6 +1173,29 @@ mod tests {
                 "parts": [{"type": "text", "text": "Inspect the failure"}],
             })
         );
+    }
+
+    /// Reasoning effort is OpenCode's per-model `variant`, and it sits beside
+    /// `model` rather than inside it. The driver used to discard the chosen
+    /// effort entirely, so every turn ran at the model's default.
+    #[test]
+    fn prompts_carry_the_selected_reasoning_effort_as_a_variant() {
+        let body = prompt_body(
+            "Inspect the failure",
+            Some("opencode-go/deepseek-v4-flash"),
+            Some("max"),
+            "build",
+        );
+        assert_eq!(body["variant"], json!("max"));
+        assert_eq!(body["model"]["modelID"], json!("deepseek-v4-flash"));
+    }
+
+    /// A model with no effort ladder must not send an empty variant, which the
+    /// server would reject as an unknown one.
+    #[test]
+    fn prompts_omit_a_blank_variant() {
+        let body = prompt_body("hi", Some("opencode/big-pickle"), Some("   "), "build");
+        assert!(body.get("variant").is_none(), "{body}");
     }
 
     #[test]
@@ -1610,6 +1463,51 @@ mod tests {
         ));
         assert_eq!(seen.len(), 5, "non-transcript events leaked");
         assert!(!*turn.lock(), "the turn should be settled exactly once");
+    }
+
+    /// The exact `session.error` payload a live opencode 1.18 server emits when
+    /// the account is out of credit. Every error is `{name, data:{message}}`,
+    /// so reading `/error/message` reported "OpenCode reported an error" and
+    /// threw the actionable billing URL away.
+    #[test]
+    fn session_errors_surface_the_provider_message_not_a_generic_sentence() {
+        let properties = json!({
+            "sessionID": "ses_1",
+            "error": {
+                "name": "APIError",
+                "data": {
+                    "message": "Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_1/billing",
+                    "statusCode": 401,
+                    "isRetryable": false
+                }
+            }
+        });
+        assert_eq!(
+            session_error_message(&properties),
+            "Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_1/billing"
+        );
+    }
+
+    /// `MessageOutputLengthError` is the one member with an empty `data`, so
+    /// its name is the only thing that says what happened.
+    #[test]
+    fn session_errors_without_a_message_fall_back_to_the_error_name() {
+        let properties = json!({
+            "sessionID": "ses_1",
+            "error": {"name": "MessageOutputLengthError", "data": {}}
+        });
+        assert_eq!(
+            session_error_message(&properties),
+            "MessageOutputLengthError"
+        );
+    }
+
+    /// A flatter shape still works, so a future server rename cannot silently
+    /// regress this back to the generic sentence.
+    #[test]
+    fn session_errors_accept_a_flat_message() {
+        let properties = json!({"error": {"message": "boom"}});
+        assert_eq!(session_error_message(&properties), "boom");
     }
 
     #[test]
@@ -1968,87 +1866,5 @@ mod tests {
         assert_eq!(option_id, "once");
         assert!(event_rx.try_recv().is_err());
         assert!(state.permissions.lock().approved.is_empty());
-    }
-
-    #[test]
-    fn always_without_provider_rules_does_not_broaden_future_access() {
-        let permissions = Mutex::new(OpenCodePermissionState::default());
-        permissions.lock().pending.insert(
-            "per_once".into(),
-            OpenCodePermissionRequest {
-                permission: "bash".into(),
-                patterns: vec!["cargo test".into()],
-                always: Vec::new(),
-            },
-        );
-
-        assert_eq!(
-            permission_responses(&permissions, "per_once", "always"),
-            [("per_once".into(), "once".into())]
-        );
-        assert!(permissions.lock().approved.is_empty());
-    }
-
-    #[test]
-    fn always_resolves_matching_requests_that_are_already_pending() {
-        let permissions = Mutex::new(OpenCodePermissionState::default());
-        let request = |patterns: &[&str]| OpenCodePermissionRequest {
-            permission: "bash".into(),
-            patterns: patterns.iter().map(|pattern| (*pattern).into()).collect(),
-            always: vec!["cargo *".into()],
-        };
-        permissions
-            .lock()
-            .pending
-            .insert("per_first".into(), request(&["cargo test"]));
-        permissions
-            .lock()
-            .pending
-            .insert("per_matching".into(), request(&["cargo check"]));
-        permissions
-            .lock()
-            .pending
-            .insert("per_other".into(), request(&["git status"]));
-
-        assert_eq!(
-            permission_responses(&permissions, "per_first", "always"),
-            [
-                ("per_first".into(), "once".into()),
-                ("per_matching".into(), "once".into()),
-            ]
-        );
-        let permissions = permissions.lock();
-        assert!(!permissions.pending.contains_key("per_matching"));
-        assert!(permissions.pending.contains_key("per_other"));
-    }
-
-    #[test]
-    fn cancelling_event_stream_unblocks_response_setup() {
-        use std::net::TcpListener;
-        use std::sync::mpsc;
-
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let control = Arc::new(OpenCodeEventStreamControl::default());
-        let reader_control = Arc::clone(&control);
-        let (done, finished) = mpsc::channel();
-        let reader = thread::spawn(move || {
-            let _ = open_event_stream(port, "/event", &reader_control);
-            done.send(()).unwrap();
-        });
-        let (_peer, _) = listener.accept().unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while control.socket.lock().is_none() && std::time::Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(control.socket.lock().is_some());
-
-        control.cancel();
-        finished
-            .recv_timeout(Duration::from_secs(1))
-            .expect("cancellation should unblock the response-head read");
-        reader.join().unwrap();
-        assert!(control.is_cancelled());
-        assert!(control.socket.lock().is_none());
     }
 }

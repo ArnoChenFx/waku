@@ -161,7 +161,7 @@ settings.general_keywords:
 settings.appearance_keywords:
   en: appearance theme system light dark language english chinese simplified font size text editor
 settings.providers_keywords:
-  en: providers agents models cli version install detect claude codex cursor opencode amp grok pi
+  en: providers agents models cli version install detect claude codex cursor opencode opencode2 amp grok pi
 settings.skills:
   en: Skills
 settings.skills_keywords:
@@ -780,6 +780,16 @@ activity.tool:
   en: Tool
 activity.plan_updated:
   en: Plan updated
+activity.compacting_context:
+  en: Compacting context
+activity.compacted_context:
+  en: Compacted context
+activity.compaction_failed:
+  en: Context compaction failed
+activity.provider_retrying:
+  en: Retrying the request
+activity.background_shell:
+  en: Background shell
 activity.output_truncated:
   en: "\n\n… output truncated"
 activity.thought:
@@ -2111,6 +2121,8 @@ usage_error.codex_access_token_missing:
   en: Codex auth.json has no access token; run `codex login`
 usage_error.opencode_go_key_rejected:
   en: OpenCode Go API key can't read usage (HTTP %{status}); reconnect OpenCode Go
+usage_error.opencode_go_not_entitled:
+  en: OpenCode Go usage needs an active OpenCode Go subscription
 usage_error.no_rate_limit_windows:
   en: The usage endpoint reported no rate-limit windows
 usage_error.start_grok_probe:

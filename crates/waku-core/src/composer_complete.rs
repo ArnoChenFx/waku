@@ -193,6 +193,11 @@ fn assemble_slash_commands(
                 scan_skill_files(provider, &home.join(".codex/skills"), &mut commands);
             }
         }
+        // OpenCode 2 publishes commands and skills live over its v2 API
+        // (`GET /api/command`, `GET /api/skill`), so it seeds nothing from
+        // the filesystem here. The shared `.agents/skills` + `.waku/commands`
+        // layer below still applies.
+        ProviderKind::OpenCode2 => {}
         ProviderKind::OpenCode => {
             scan_command_files(
                 &project_root.join(".opencode/command"),
