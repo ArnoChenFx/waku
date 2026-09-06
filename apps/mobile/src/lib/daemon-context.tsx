@@ -10,14 +10,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { AppState, Platform } from "react-native";
+import { AppState, Platform, type AppStateStatus } from "react-native";
 
 import { daemonKeys } from "./daemon-api";
 import { hydratePersistentStorage } from "./composer-preferences-store";
-import {
-  DAEMON_RECONNECT_DELAY_MS,
-  nextDaemonReconnectAttempt,
-} from "./daemon-retry";
+import { DaemonLink, type DaemonOutage } from "./daemon-link";
 import {
   normalizeDaemonProfile,
   isPrivateDaemonAddress,
@@ -34,15 +31,38 @@ import {
   writeDaemonToken,
 } from "./daemon-storage";
 
-export type ConnectionPhase =
-  "booting" | "disconnected" | "connecting" | "connected" | "error";
+export type { DaemonOutage } from "./daemon-link";
 
-interface DaemonContextValue {
+/**
+ * - `booting`: saved daemons are still loading.
+ * - `disconnected`: no daemon is selected.
+ * - `connecting`: the selected daemon's first attempt is in flight.
+ * - `connected`: live.
+ * - `reconnecting`: the link is down and retrying on its own; `outage`
+ *   reports its progress.
+ * - `error`: the link is down and waiting on the user; `error` says why.
+ */
+export type ConnectionPhase =
+  | "booting"
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "error";
+
+interface ConnectionStatus {
+  phase: ConnectionPhase;
+  error: string | null;
+  outage: DaemonOutage | null;
+  /** Successful connections to the selected daemon. Past the first, screens
+   * refresh what the daemon may have changed while the link was down. */
+  connections: number;
+}
+
+interface DaemonContextValue extends ConnectionStatus {
   profiles: DaemonProfile[];
   activeProfile: DaemonProfile | null;
   client: WakuClient | null;
-  phase: ConnectionPhase;
-  error: string | null;
   saveProfile: (
     input: DaemonProfileInput,
     id?: string,
@@ -52,11 +72,21 @@ interface DaemonContextValue {
   }>;
   selectProfile: (id: string) => Promise<boolean>;
   removeProfile: (id: string) => Promise<void>;
+  /** Tries now: during an outage the wait is skipped and the backoff
+   * restarts; after a hard failure the daemon is opened afresh with the
+   * token stored now. */
   reconnect: () => Promise<boolean>;
   disconnect: () => void;
 }
 
 const DaemonContext = createContext<DaemonContextValue | null>(null);
+
+const IDLE: ConnectionStatus = {
+  phase: "disconnected",
+  error: null,
+  outage: null,
+  connections: 0,
+};
 
 function createNativeDaemonSocket(url: string): WebSocketLike {
   // React Native adds an Origin header to native sockets. This marker lets the
@@ -79,25 +109,17 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
   const [profiles, setProfiles] = useState<DaemonProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [client, setClient] = useState<WakuClient | null>(null);
-  const [phase, setPhase] = useState<ConnectionPhase>("booting");
-  const [error, setError] = useState<string | null>(null);
-  const [appIsActive, setAppIsActive] = useState(
-    AppState.currentState === "active",
-  );
+  const [status, setStatus] = useState<ConnectionStatus>({
+    ...IDLE,
+    phase: "booting",
+  });
   const profilesRef = useRef<DaemonProfile[]>([]);
   const activeProfileIdRef = useRef<string | null>(null);
-  const clientRef = useRef<WakuClient | null>(null);
-  const phaseRef = useRef<ConnectionPhase>("booting");
+  const linkRef = useRef<DaemonLink | null>(null);
   const generation = useRef(0);
-  const reconnectAttempt = useRef(0);
   const bootstrapped = useRef(false);
-  const unsubscribeConnection = useRef<(() => void) | null>(null);
+  const unsubscribeLink = useRef<(() => void) | null>(null);
   const unsubscribeTaskState = useRef<(() => void) | null>(null);
-
-  const updatePhase = useCallback((next: ConnectionPhase) => {
-    phaseRef.current = next;
-    setPhase(next);
-  }, []);
 
   const commitProfiles = useCallback(async (next: DaemonProfile[]) => {
     profilesRef.current = next;
@@ -105,40 +127,66 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
     await writeDaemonProfiles(next);
   }, []);
 
-  const closeCurrentClient = useCallback((updateReactState = true) => {
-    unsubscribeConnection.current?.();
-    unsubscribeConnection.current = null;
+  const closeCurrentLink = useCallback((updateReactState = true) => {
+    unsubscribeLink.current?.();
+    unsubscribeLink.current = null;
     unsubscribeTaskState.current?.();
     unsubscribeTaskState.current = null;
-    const current = clientRef.current;
-    clientRef.current = null;
+    const current = linkRef.current;
+    linkRef.current = null;
     if (updateReactState) setClient(null);
-    current?.disconnect();
+    current?.close();
   }, []);
+
+  /** Recency and cache upkeep for every (re)connection. */
+  const noteConnected = useCallback(
+    (profileId: string, connections: number) => {
+      const connectedAt = Date.now();
+      const updated = profilesRef.current.map((item) =>
+        item.id === profileId ? { ...item, lastConnectedAt: connectedAt } : item,
+      );
+      profilesRef.current = updated;
+      setProfiles(updated);
+      void writeDaemonProfiles(updated).catch(() => {
+        // A recency metadata write must not turn a live connection into an error state.
+      });
+      if (connections > 1) {
+        // Task-state and session change notifications sent while the link
+        // was down are gone, so refetch what screens are showing. Followed
+        // runtimes replay their missed events on their own.
+        void queryClient.invalidateQueries({
+          queryKey: ["daemon", profileId],
+          predicate: (query) =>
+            query.queryKey[2] === "task-state" || query.queryKey[2] === "session",
+        });
+      }
+    },
+    [queryClient],
+  );
 
   const activate = useCallback(
     async (
       profileId: string,
       candidates = profilesRef.current,
-      preserveError = false,
     ): Promise<boolean> => {
       const profile = candidates.find((item) => item.id === profileId);
       if (!profile) return false;
 
       const attempt = ++generation.current;
-      reconnectAttempt.current = 0;
-      closeCurrentClient();
+      closeCurrentLink();
       activeProfileIdRef.current = profile.id;
       setActiveProfileId(profile.id);
-      updatePhase("connecting");
-      if (!preserveError) setError(null);
+      setStatus({ ...IDLE, phase: "connecting" });
 
       try {
         await writeActiveDaemonId(profile.id);
       } catch (cause) {
         if (generation.current !== attempt) return false;
-        setError(errorMessage(cause, "Couldn’t remember the selected daemon"));
-        updatePhase("error");
+        setStatus({
+          ...IDLE,
+          phase: "error",
+          error: errorMessage(cause, "Couldn’t remember the selected daemon"),
+        });
         return false;
       }
 
@@ -147,16 +195,21 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
         token = await readDaemonToken(profile.id);
       } catch (cause) {
         if (generation.current !== attempt) return false;
-        setError(errorMessage(cause, "Couldn’t read this daemon token"));
-        updatePhase("error");
+        setStatus({
+          ...IDLE,
+          phase: "error",
+          error: errorMessage(cause, "Couldn’t read this daemon token"),
+        });
         return false;
       }
       if (generation.current !== attempt) return false;
       if (!token) {
-        setError(
-          "This daemon token is missing. Edit the connection to add it again.",
-        );
-        updatePhase("error");
+        setStatus({
+          ...IDLE,
+          phase: "error",
+          error:
+            "This daemon token is missing. Edit the connection to add it again.",
+        });
         return false;
       }
 
@@ -167,90 +220,62 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
         webSocketFactory:
           Platform.OS === "web" ? undefined : createNativeDaemonSocket,
       });
-      let connectedOnce = false;
-      clientRef.current = next;
+      const link = new DaemonLink({
+        client: next,
+        active: inForeground(AppState.currentState),
+      });
+      linkRef.current = link;
       setClient(next);
-      unsubscribeConnection.current = next.subscribeConnectionState((state) => {
-        if (generation.current !== attempt || clientRef.current !== next)
-          return;
-        if (state === "connecting") {
-          updatePhase("connecting");
-          return;
-        }
-        if (state === "connected") {
-          connectedOnce = true;
-          reconnectAttempt.current = 0;
-          setError(null);
-          updatePhase("connected");
+      let seenConnections = 0;
+      unsubscribeLink.current = link.subscribe((snapshot) => {
+        if (
+          generation.current !== attempt ||
+          linkRef.current !== link ||
+          snapshot.phase === "closed"
+        ) {
           return;
         }
-        if (connectedOnce) {
-          setError(
-            "The daemon connection closed. Your tasks are still safe on the host.",
-          );
-          updatePhase("error");
+        setStatus({
+          phase: snapshot.phase,
+          error: snapshot.error,
+          outage: snapshot.outage,
+          connections: snapshot.connections,
+        });
+        if (snapshot.connections > seenConnections) {
+          seenConnections = snapshot.connections;
+          noteConnected(profile.id, snapshot.connections);
         }
       });
+      unsubscribeTaskState.current = next.subscribeTaskState(() => {
+        void queryClient.invalidateQueries({
+          queryKey: daemonKeys.taskState(profile.id),
+        });
+      });
 
-      try {
-        await next.connect();
-        if (generation.current !== attempt || clientRef.current !== next) {
-          next.disconnect();
-          return false;
-        }
-        unsubscribeTaskState.current = next.subscribeTaskState(() => {
-          void queryClient.invalidateQueries({
-            queryKey: daemonKeys.taskState(profile.id),
-          });
-        });
-        const connectedAt = Date.now();
-        const updated = profilesRef.current.map((item) =>
-          item.id === profile.id
-            ? { ...item, lastConnectedAt: connectedAt }
-            : item,
-        );
-        profilesRef.current = updated;
-        setProfiles(updated);
-        void writeDaemonProfiles(updated).catch(() => {
-          // A recency metadata write must not turn a live connection into an error state.
-        });
-        return true;
-      } catch (cause) {
-        if (generation.current !== attempt || clientRef.current !== next)
-          return false;
-        setError(errorMessage(cause, "Couldn’t connect to this daemon"));
-        updatePhase("error");
-        return false;
-      }
+      const connected = await link.open();
+      return (
+        generation.current === attempt && linkRef.current === link && connected
+      );
     },
-    [closeCurrentClient, commitProfiles, queryClient, updatePhase],
+    [closeCurrentLink, noteConnected, queryClient],
   );
 
   const reconnect = useCallback(async (): Promise<boolean> => {
     const id = activeProfileIdRef.current;
-    const current = clientRef.current;
     if (!id) return false;
-    if (!current) return activate(id, profilesRef.current, true);
-    if (current.connectionState === "connected") {
-      setError(null);
-      updatePhase("connected");
-      return true;
+    const link = linkRef.current;
+    if (!link) return activate(id);
+    switch (link.state.phase) {
+      case "connected":
+        return true;
+      case "connecting":
+      case "reconnecting":
+        return link.retryNow();
+      default:
+        // A hard failure gets a fresh client with whatever token is stored now.
+        return activate(id);
     }
-    if (current.connectionState === "connecting") return false;
-
-    const attempt = generation.current;
-    updatePhase("connecting");
-    try {
-      await current.connect();
-      return generation.current === attempt && clientRef.current === current;
-    } catch (cause) {
-      if (generation.current !== attempt || clientRef.current !== current)
-        return false;
-      setError(errorMessage(cause, "Couldn’t reconnect to this daemon"));
-      updatePhase("error");
-      return false;
-    }
-  }, [activate, updatePhase]);
+  }, [activate]);
 
   useEffect(() => {
     if (bootstrapped.current) return;
@@ -265,7 +290,7 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
         profilesRef.current = savedProfiles;
         setProfiles(savedProfiles);
         if (!savedProfiles.length) {
-          updatePhase("disconnected");
+          setStatus(IDLE);
           return;
         }
         const selected = savedProfiles.some((item) => item.id === savedActiveId)
@@ -273,48 +298,30 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
           : savedProfiles[0]!.id;
         await activate(selected, savedProfiles);
       } catch (cause) {
-        setError(errorMessage(cause, "Couldn’t load saved daemons"));
-        updatePhase("error");
+        setStatus({
+          ...IDLE,
+          phase: "error",
+          error: errorMessage(cause, "Couldn’t load saved daemons"),
+        });
       }
     })();
-  }, [activate, updatePhase]);
+  }, [activate]);
 
+  // The link retries and probes only while the app is in the foreground;
+  // returning to it triggers an immediate retry or a liveness probe.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      setAppIsActive(state === "active");
+      linkRef.current?.setActive(inForeground(state));
     });
     return () => subscription.remove();
   }, []);
 
-  // Retry a failed daemon connection three times, five seconds apart. Keep the
-  // completed-attempt count through the intermediate `connecting` phase so a
-  // failure cannot accidentally restart the retry budget.
-  useEffect(() => {
-    if (phase === "connected" || phase === "disconnected") {
-      reconnectAttempt.current = 0;
-    }
-    if (phase !== "error" || !appIsActive || !clientRef.current) return;
-    const nextAttempt = nextDaemonReconnectAttempt(reconnectAttempt.current);
-    if (nextAttempt === null) return;
-    const timer = setTimeout(() => {
-      if (
-        phaseRef.current !== "error" ||
-        AppState.currentState !== "active"
-      ) {
-        return;
-      }
-      reconnectAttempt.current = nextAttempt;
-      void reconnect();
-    }, DAEMON_RECONNECT_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [appIsActive, phase, reconnect]);
-
   useEffect(
     () => () => {
       ++generation.current;
-      closeCurrentClient(false);
+      closeCurrentLink(false);
     },
-    [closeCurrentClient],
+    [closeCurrentLink],
   );
 
   const saveProfile = useCallback(
@@ -383,23 +390,21 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
       if (activeProfileIdRef.current !== id) return;
 
       ++generation.current;
-      closeCurrentClient();
+      closeCurrentLink();
       activeProfileIdRef.current = null;
       setActiveProfileId(null);
       await writeActiveDaemonId(null);
-      setError(null);
+      setStatus(IDLE);
       if (next.length) await activate(next[0]!.id, next);
-      else updatePhase("disconnected");
     },
-    [activate, closeCurrentClient, commitProfiles, queryClient, updatePhase],
+    [activate, closeCurrentLink, commitProfiles, queryClient],
   );
 
   const disconnect = useCallback(() => {
     ++generation.current;
-    closeCurrentClient();
-    setError(null);
-    updatePhase("disconnected");
-  }, [closeCurrentClient, updatePhase]);
+    closeCurrentLink();
+    setStatus(IDLE);
+  }, [closeCurrentLink]);
 
   const activeProfile =
     profiles.find((item) => item.id === activeProfileId) ?? null;
@@ -409,8 +414,10 @@ export function DaemonProvider({ children }: { children: ReactNode }) {
         profiles,
         activeProfile,
         client,
-        phase,
-        error,
+        phase: status.phase,
+        error: status.error,
+        outage: status.outage,
+        connections: status.connections,
         saveProfile,
         selectProfile,
         removeProfile,
@@ -427,6 +434,12 @@ export function useDaemon() {
   const context = useContext(DaemonContext);
   if (!context) throw new Error("useDaemon must be used inside DaemonProvider");
   return context;
+}
+
+/** Only a backgrounded (or transitioning) app pauses the link; an `unknown`
+ * state at launch must not leave it waiting for a change that never comes. */
+function inForeground(state: AppStateStatus): boolean {
+  return state !== "background" && state !== "inactive";
 }
 
 function errorMessage(cause: unknown, fallback: string): string {

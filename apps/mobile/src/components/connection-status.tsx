@@ -14,7 +14,7 @@ export function ConnectionStatus({
   const presentation = statusPresentation(phase, theme);
   return (
     <View style={styles.container}>
-      {phase === 'connecting' || phase === 'booting' ? (
+      {presentation.busy ? (
         <ActivityIndicator color={presentation.color} size="small" style={styles.spinner} />
       ) : (
         <View style={[styles.dot, { backgroundColor: presentation.color }]} />
@@ -26,20 +26,39 @@ export function ConnectionStatus({
   );
 }
 
+/** The phase as a short word, for labels and accessibility. */
+export function connectionPhaseLabel(phase: ConnectionPhase): string {
+  switch (phase) {
+    case 'connected':
+      return 'Connected';
+    case 'connecting':
+    case 'booting':
+      return 'Connecting';
+    case 'reconnecting':
+      return 'Reconnecting';
+    case 'error':
+      return 'Needs attention';
+    default:
+      return 'Offline';
+  }
+}
+
 function statusPresentation(
   phase: ConnectionPhase,
   theme: ReturnType<typeof useTheme>,
-) {
+): { label: string; color: string; busy: boolean } {
+  const label = connectionPhaseLabel(phase);
   switch (phase) {
     case 'connected':
-      return { label: 'Connected', color: theme.success };
+      return { label, color: theme.success, busy: false };
     case 'connecting':
     case 'booting':
-      return { label: 'Connecting', color: theme.warning };
+    case 'reconnecting':
+      return { label, color: theme.warning, busy: true };
     case 'error':
-      return { label: 'Needs attention', color: theme.danger };
+      return { label, color: theme.danger, busy: false };
     default:
-      return { label: 'Offline', color: theme.textTertiary };
+      return { label, color: theme.textTertiary, busy: false };
   }
 }
 

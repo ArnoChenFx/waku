@@ -25,6 +25,10 @@ import { Sheet, SheetRow } from './sheet';
 import { NativeTint, Radius } from '@/constants/theme';
 import { useAllProviderModels, useProviderModels } from '@/hooks/use-daemon-data';
 import { useTheme } from '@/hooks/use-theme';
+import {
+  resolveModelTraitSelection,
+  type ModelTraitSelection,
+} from '@/lib/model-traits';
 import { providerLabel, runtimeModeLabel } from '@/lib/session-presentation';
 
 export interface ModelSelection {
@@ -123,12 +127,105 @@ export function ModelSheet({
   );
 }
 
-export interface ProviderModelSelection {
-  provider: ProviderKind;
-  model: string | null;
-  reasoningEffort: string | null;
+/** All model-advertised options in one sheet. Unlike single-choice pickers,
+ * it stays open after a choice so effort, tier, and context can be configured
+ * together before starting a task. */
+export function ModelTraitsSheet({
+  visible,
+  onDismiss,
+  model,
+  selection,
+  onApply,
+}: {
+  visible: boolean;
+  onDismiss: () => void;
+  model: ProviderModel;
+  selection: ModelTraitSelection;
+  onApply: (changes: Partial<ModelTraitSelection>) => void;
+}) {
+  const theme = useTheme();
+  const resolved = resolveModelTraitSelection(model, selection);
+
+  function pick(changes: Partial<ModelTraitSelection>) {
+    void Haptics.selectionAsync();
+    onApply(changes);
+  }
+
+  return (
+    <Sheet onDismiss={onDismiss} visible={visible}>
+      {model.reasoning_efforts.length ? (
+        <>
+          <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>
+            REASONING EFFORT
+          </Text>
+          {model.reasoning_efforts.map((option) => (
+            <SheetRow
+              description={optionDescription(
+                option.description,
+                model.default_reasoning_effort === option.id,
+              )}
+              key={option.id}
+              label={option.label}
+              onPress={() => pick({ reasoningEffort: option.id })}
+              selected={resolved.reasoningEffort === option.id}
+            />
+          ))}
+        </>
+      ) : null}
+      {model.service_tiers.length ? (
+        <>
+          <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>
+            SERVICE TIER
+          </Text>
+          <SheetRow
+            description={(model.default_service_tier ?? 'default') === 'default'
+              ? 'Default'
+              : undefined}
+            label="Standard"
+            onPress={() => pick({ serviceTier: 'default' })}
+            selected={resolved.serviceTier === 'default'}
+          />
+          {model.service_tiers.map((option) => (
+            <SheetRow
+              description={optionDescription(
+                option.description,
+                model.default_service_tier === option.id,
+              )}
+              key={option.id}
+              label={option.label}
+              onPress={() => pick({ serviceTier: option.id })}
+              selected={resolved.serviceTier === option.id}
+            />
+          ))}
+        </>
+      ) : null}
+      {model.context_windows.length ? (
+        <>
+          <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>
+            CONTEXT WINDOW
+          </Text>
+          {model.context_windows.map((option) => (
+            <SheetRow
+              description={optionDescription(
+                option.description,
+                model.default_context_window === option.id,
+              )}
+              key={option.id}
+              label={option.label}
+              onPress={() => pick({ contextWindow: option.id })}
+              selected={resolved.contextWindow === option.id}
+            />
+          ))}
+        </>
+      ) : null}
+    </Sheet>
+  );
 }
 
+export interface ProviderModelSelection extends ModelTraitSelection {
+  provider: ProviderKind;
+  model: string | null;
+}
 
 /**
  * Two-screen cross-provider model picker: opening lands on the current
@@ -179,6 +276,8 @@ export function ModelPickerSheet({
   }
 
   const entry = catalog.find((item) => item.id === browsing);
+  const preferredModelId = entry?.models.find((item) => item.is_default)?.id
+    ?? entry?.models[0]?.id;
   const listHeight = Math.round(windowHeight * 0.48);
   const items = useMemo<ProviderModel[]>(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -198,6 +297,8 @@ export function ModelPickerSheet({
       provider: browsing,
       model: next.id,
       reasoningEffort: next.default_reasoning_effort ?? null,
+      serviceTier: next.default_service_tier ?? null,
+      contextWindow: next.default_context_window ?? null,
     });
     onDismiss();
   }
@@ -301,7 +402,7 @@ export function ModelPickerSheet({
                     label={item.name}
                     onPress={() => pickModel(item)}
                     selected={provider === browsing &&
-                      (model === item.id || (!model && item.is_default))}
+                      (model === item.id || (!model && item.id === preferredModelId))}
                   />
                 )}
                 showsVerticalScrollIndicator={false}
@@ -358,6 +459,11 @@ export function AccessSheet({
       ))}
     </Sheet>
   );
+}
+
+function optionDescription(description: string | null | undefined, isDefault: boolean) {
+  if (description && isDefault) return `Default · ${description}`;
+  return description ?? (isDefault ? 'Default' : undefined);
 }
 
 const styles = StyleSheet.create({

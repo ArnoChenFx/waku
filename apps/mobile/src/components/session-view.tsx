@@ -1,7 +1,13 @@
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { MenuView, type MenuAction } from '@expo/ui/community/menu';
+import {
+  router,
+  Stack,
+  type NativeStackHeaderItem,
+  type NativeStackNavigationOptions,
+} from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -11,17 +17,26 @@ import {
   View,
 } from 'react-native';
 
-import { AppSymbol } from '@/components/app-symbol';
+import { ActivitySheetHost } from '@/components/activity-sheet';
+import { ConnectionBanner } from '@/components/connection-banner';
 import { MobileComposer } from '@/components/mobile-composer';
 import { RenameDialog } from '@/components/rename-dialog';
 import {
   HeaderAction,
   HeaderActionGroup,
+  HeaderMenuTrigger,
+  HeaderTitle,
+  ScreenHeaderBackdrop,
+  nativeHeaderButtons,
   navigateBack,
-  ScreenHeader,
   useScreenHeaderInset,
+  type HeaderActionSpec,
 } from '@/components/screen-header';
-import { Sheet, SheetRow } from '@/components/sheet';
+import {
+  TaskSurfaceSheet,
+  type TaskSurface,
+} from '@/components/task-surface-sheet';
+import { useTaskDrawer } from '@/components/task-drawer';
 import {
   TranscriptList,
   type TranscriptDevSample,
@@ -35,6 +50,29 @@ import { sessionBusy } from '@/lib/mobile-runtime';
 import { useRuntime } from '@/lib/runtime-context';
 import { displaySessionTitle } from '@/lib/session-presentation';
 
+const SURFACE_MENU_COMMANDS = [
+  { id: 'terminal', title: 'Terminal', symbol: 'terminal' },
+  { id: 'files', title: 'Files', symbol: 'folder' },
+  { id: 'review', title: 'Review', symbol: 'doc.text.magnifyingglass' },
+] as const;
+
+const TASK_MENU_COMMANDS = [
+  { id: 'rename', title: 'Rename task', symbol: 'pencil', destructive: false },
+  {
+    id: 'copy-last-response',
+    title: 'Copy last response',
+    symbol: 'doc.on.doc',
+    destructive: false,
+  },
+  {
+    id: 'reload',
+    title: 'Reload transcript',
+    symbol: 'arrow.clockwise',
+    destructive: false,
+  },
+  { id: 'delete', title: 'Delete task', symbol: 'trash', destructive: true },
+] as const;
+
 export function SessionView({
   sessionId,
   devPrompt,
@@ -47,14 +85,23 @@ export function SessionView({
   const theme = useTheme();
   const daemon = useDaemon();
   const runtime = useRuntime();
+  const { openTaskDrawer } = useTaskDrawer();
   const query = useSession(sessionId);
   const session = query.data;
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [taskSurface, setTaskSurface] = useState<TaskSurface | null>(null);
+  const [taskSurfaceOpen, setTaskSurfaceOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [underHeader, setUnderHeader] = useState(false);
+  const [mountedTranscriptSessionId, setMountedTranscriptSessionId] = useState<string | null>(null);
   const running = Boolean(session && sessionBusy(session));
   const listRef = useRef<TranscriptListHandle>(null);
   const headerInset = useScreenHeaderInset();
+  const sessionRef = useRef(session);
+  const queryRef = useRef(query);
+  const runtimeRef = useRef(runtime);
+  sessionRef.current = session;
+  queryRef.current = query;
+  runtimeRef.current = runtime;
 
   useEffect(() => {
     if (!session || daemon.phase !== 'connected') return;
@@ -63,8 +110,34 @@ export function SessionView({
     // started the runtime after this screen mounted).
   }, [daemon.phase, runtime.attachSession, session?.id, running]);
 
-  // The header backdrop resets with the session; the list reports the rest.
-  useEffect(() => setUnderHeader(false), [session?.id]);
+  // Transient task chrome belongs to one session. A route reuse must not show
+  // the previous task's file, review, or terminal surface.
+  useEffect(() => {
+    setUnderHeader(false);
+    setTaskSurfaceOpen(false);
+    setTaskSurface(null);
+  }, [session?.id]);
+
+  // Route/header/composer get the first commit by themselves. Transcript row
+  // construction includes pipeline building and Markdown expansion, so doing
+  // it in the route's first render delays the entire native screen appearing.
+  // Two frames guarantee the lightweight task shell has painted before that
+  // synchronous presentation work begins.
+  useEffect(() => {
+    const sessionId = session?.id;
+    if (!sessionId) {
+      setMountedTranscriptSessionId(null);
+      return;
+    }
+    let mountFrame = 0;
+    const shellFrame = requestAnimationFrame(() => {
+      mountFrame = requestAnimationFrame(() => setMountedTranscriptSessionId(sessionId));
+    });
+    return () => {
+      cancelAnimationFrame(shellFrame);
+      if (mountFrame) cancelAnimationFrame(mountFrame);
+    };
+  }, [session?.id]);
 
   const probe = useDevProbe(Boolean(devPrompt));
 
@@ -93,19 +166,25 @@ export function SessionView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [daemon.phase, devPrompt, query.isPlaceholderData, session]);
 
-  async function copyLastResponse() {
-    const lastAssistant = [...(session?.messages ?? [])]
+  const openTaskSurface = useCallback((surface: TaskSurface) => {
+    setTaskSurface(surface);
+    setTaskSurfaceOpen(true);
+  }, []);
+
+  const copyLastResponse = useCallback(async () => {
+    const lastAssistant = [...(sessionRef.current?.messages ?? [])]
       .reverse()
       .find((message) => message.role === 'assistant' && message.content.trim());
     if (!lastAssistant) return;
     await Clipboard.setStringAsync(lastAssistant.content);
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  }
+  }, []);
 
-  function confirmDelete() {
-    if (!session) return;
+  const confirmDelete = useCallback(() => {
+    const current = sessionRef.current;
+    if (!current) return;
     Alert.alert(
-      `Delete “${displaySessionTitle(session)}”?`,
+      `Delete “${displaySessionTitle(current)}”?`,
       'This removes the task and its transcript from the daemon for every device.',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -113,7 +192,7 @@ export function SessionView({
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            void runtime.deleteSession(session.id)
+            void runtimeRef.current.deleteSession(current.id)
               .then(() => {
                 void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 navigateBack();
@@ -125,101 +204,215 @@ export function SessionView({
         },
       ],
     );
-  }
+  }, []);
 
-  const projectName = useTaskState().data?.projects
-    .find((project) => project.id === session?.project_id)?.name;
-  const subtitleParts = [projectName, daemon.activeProfile?.name].filter(Boolean);
+  const handleTaskMenuCommand = useCallback(
+    (command: string) => {
+      if (command === 'terminal' || command === 'files' || command === 'review') {
+        openTaskSurface(command);
+      } else if (command === 'rename') {
+        setRenaming(true);
+      } else if (command === 'copy-last-response') {
+        void copyLastResponse();
+      } else if (command === 'reload') {
+        void queryRef.current.refetch();
+      } else if (command === 'delete') {
+        confirmDelete();
+      }
+    },
+    [confirmDelete, copyLastResponse, openTaskSurface],
+  );
+
+  const taskState = useTaskState().data;
+  const project = taskState?.projects.find((item) => item.id === session?.project_id);
+  const subtitleParts = [project?.name, daemon.activeProfile?.name].filter(Boolean);
+  const title = session ? displaySessionTitle(session) : 'Task';
+  // The bar's subtitle doubles as the quiet link indicator, the way messaging
+  // apps do it; the banner below only steps in when the outage persists.
+  const linkSubtitle = daemon.phase === 'reconnecting'
+    ? daemon.outage?.interrupted ? 'Reconnecting…' : 'Connecting…'
+    : daemon.phase === 'connecting' || daemon.phase === 'booting'
+      ? 'Connecting…'
+      : daemon.phase === 'error' ? 'Not connected' : null;
+  const subtitle = linkSubtitle ?? (subtitleParts.length ? subtitleParts.join(' · ') : null);
+  const hasSession = Boolean(session);
+  const transcriptMounted = Boolean(
+    session && mountedTranscriptSessionId === session.id,
+  );
+  const taskMenuActions = useMemo<MenuAction[]>(
+    () => [
+      ...SURFACE_MENU_COMMANDS.map((item) => ({
+        id: item.id,
+        title: item.title,
+        image: item.symbol,
+      })),
+      {
+        id: 'task-actions',
+        title: '',
+        displayInline: true,
+        subactions: TASK_MENU_COMMANDS.map((item) => ({
+          id: item.id,
+          title: item.title,
+          image: item.symbol,
+          attributes: item.destructive ? { destructive: true } : undefined,
+        })),
+      },
+    ],
+    [],
+  );
+
+  // The chrome lives in the native navigation bar, so it stays put while the
+  // page slides under a swipe-back. Keyed on the strings, not the session, so
+  // streaming updates never touch the bar.
+  const headerOptions = useMemo<NativeStackNavigationOptions>(() => {
+    const drawer: HeaderActionSpec = {
+      icon: { ios: 'sidebar.left', android: 'menu', web: 'menu' },
+      label: 'Task history',
+      onPress: openTaskDrawer,
+    };
+    const newTask: HeaderActionSpec = {
+      icon: { ios: 'square.and.pencil', android: 'edit_square', web: 'edit' },
+      label: 'New task',
+      onPress: () => router.dismissTo('/'),
+    };
+    const nativeItems: NativeStackHeaderItem[] = hasSession
+      ? [
+          ...nativeHeaderButtons([newTask]),
+          {
+            type: 'menu',
+            label: 'Task options',
+            accessibilityLabel: 'Task options',
+            icon: { type: 'sfSymbol', name: 'ellipsis' },
+            menu: {
+              title,
+              // These are commands, not a single-selection picker.
+              multiselectable: true,
+              items: [
+                ...SURFACE_MENU_COMMANDS.map((item) => ({
+                  type: 'action' as const,
+                  label: item.title,
+                  icon: { type: 'sfSymbol' as const, name: item.symbol },
+                  onPress: () => handleTaskMenuCommand(item.id),
+                })),
+                {
+                  type: 'submenu',
+                  label: '',
+                  inline: true,
+                  multiselectable: true,
+                  items: TASK_MENU_COMMANDS.map((item) => ({
+                    type: 'action' as const,
+                    label: item.title,
+                    icon: { type: 'sfSymbol' as const, name: item.symbol },
+                    destructive: item.destructive,
+                    onPress: () => handleTaskMenuCommand(item.id),
+                  })),
+                },
+              ],
+            },
+          },
+        ]
+      : [];
+    return {
+      headerTitle: Platform.OS === 'ios'
+        ? ''
+        : () => <HeaderTitle subtitle={subtitle} title={title} />,
+      headerTitleAlign: 'left',
+      headerRight: hasSession
+        ? () => (
+            <HeaderActionGroup>
+              <HeaderAction {...newTask} />
+              <MenuView
+                actions={taskMenuActions}
+                title={title}
+                onPressAction={({ nativeEvent }) =>
+                  handleTaskMenuCommand(nativeEvent.event)
+                }
+              >
+                <HeaderMenuTrigger
+                  icon={{
+                    ios: 'ellipsis',
+                    android: 'more_horiz',
+                    web: 'more_horiz',
+                  }}
+                  label="Task options"
+                />
+              </MenuView>
+            </HeaderActionGroup>
+          )
+        : undefined,
+      unstable_headerRightItems: nativeItems.length
+        ? () => nativeItems
+        : undefined,
+      unstable_headerLeftItems: Platform.OS === 'ios'
+        ? () => [
+            ...nativeHeaderButtons([drawer]),
+            {
+              type: 'custom' as const,
+              element: <HeaderTitle subtitle={subtitle} title={title} />,
+              hidesSharedBackground: true,
+            },
+          ]
+        : undefined,
+    };
+  }, [handleTaskMenuCommand, hasSession, openTaskDrawer, subtitle, taskMenuActions, title]);
 
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={[styles.screen, { backgroundColor: theme.background }]}>
-      <ScreenHeader
-        scrolled={underHeader}
-        right={session ? (
-          <HeaderActionGroup>
-            <HeaderAction
-              icon={{ ios: 'square.and.pencil', android: 'edit_square', web: 'edit' }}
-              label="New task"
-              onPress={() => router.push('/new-task')}
-            />
-            <HeaderAction
-              icon={{ ios: 'ellipsis', android: 'more_horiz', web: 'more_horiz' }}
-              label="Task options"
-              onPress={() => setMenuOpen(true)}
-            />
-          </HeaderActionGroup>
-        ) : undefined}
-        subtitle={subtitleParts.length ? subtitleParts.join(' · ') : null}
-        title={session ? displaySessionTitle(session) : 'Task'}
-      />
+      <Stack.Screen options={headerOptions} />
       <View style={styles.body}>
-        {session ? (
-          <TranscriptList
-            headerInset={headerInset}
-            hydrated={!query.isPlaceholderData}
-            key={session.id}
-            offline={daemon.phase === 'error'}
-            ref={listRef}
-            running={running}
-            session={session}
-            onDevSample={devPrompt ? probe.sample : undefined}
-            onUnderHeaderChange={setUnderHeader}
-          />
+        {session && transcriptMounted ? (
+          <ActivitySheetHost key={`activity-sheet:${session.id}`} session={session}>
+            <TranscriptList
+              headerInset={headerInset}
+              hydrated={!query.isPlaceholderData}
+              ref={listRef}
+              running={running}
+              session={session}
+              onDevSample={devPrompt ? probe.sample : undefined}
+              onUnderHeaderChange={setUnderHeader}
+            />
+          </ActivitySheetHost>
         ) : (
           <View style={styles.placeholder}>
-            <SessionEmpty error={query.error} loading={query.isPending} missing={query.data === null} />
+            <SessionEmpty
+              error={query.error}
+              loading={Boolean(session) || query.isPending}
+              missing={query.data === null}
+            />
           </View>
         )}
+        <View pointerEvents="box-none" style={[styles.linkBanner, { top: headerInset + 8 }]}>
+          <ConnectionBanner floating />
+        </View>
         {Boolean(devPrompt && probe.text) && (
           <View pointerEvents="none" style={[styles.devBadge, { top: headerInset + 8 }]}>
             <Text style={styles.devBadgeText}>{probe.text}</Text>
           </View>
         )}
       </View>
+      <ScreenHeaderBackdrop visible={underHeader} />
       {session && (
         <MobileComposer
+          key={`composer:${session.id}`}
           session={session}
           onSubmitted={() => listRef.current?.followNextGrowth()}
         />
       )}
 
-      <Sheet onDismiss={() => setMenuOpen(false)} visible={menuOpen}>
-        <SheetRow
-          label="Rename task"
-          leading={<AppSymbol name={{ ios: 'pencil', android: 'edit', web: 'edit' }} size={16} tintColor={theme.textSecondary} />}
-          onPress={() => {
-            setMenuOpen(false);
-            setRenaming(true);
+      {session && (
+        <TaskSurfaceSheet
+          key={`task-surface:${session.id}`}
+          onDismiss={() => {
+            setTaskSurfaceOpen(false);
           }}
+          project={project}
+          session={session}
+          surface={taskSurface}
+          visible={taskSurfaceOpen}
         />
-        <SheetRow
-          label="Copy last response"
-          leading={<AppSymbol name={{ ios: 'doc.on.doc', android: 'content_copy', web: 'content_copy' }} size={16} tintColor={theme.textSecondary} />}
-          onPress={() => {
-            setMenuOpen(false);
-            void copyLastResponse();
-          }}
-        />
-        <SheetRow
-          label="Reload transcript"
-          leading={<AppSymbol name={{ ios: 'arrow.clockwise', android: 'refresh', web: 'refresh' }} size={16} tintColor={theme.textSecondary} />}
-          onPress={() => {
-            setMenuOpen(false);
-            void query.refetch();
-          }}
-        />
-        <SheetRow
-          destructive
-          label="Delete task"
-          leading={<AppSymbol name={{ ios: 'trash', android: 'delete', web: 'delete' }} size={16} tintColor={theme.danger} />}
-          onPress={() => {
-            setMenuOpen(false);
-            confirmDelete();
-          }}
-        />
-      </Sheet>
+      )}
       {session && (
         <RenameDialog
           initialValue={displaySessionTitle(session)}
@@ -297,6 +490,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   body: { flex: 1 },
   placeholder: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingHorizontal: 32 },
+  linkBanner: { left: 12, position: 'absolute', right: 12, zIndex: 10 },
   devBadge: {
     backgroundColor: 'rgba(0,0,0,0.75)',
     borderRadius: 6,

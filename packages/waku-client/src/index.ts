@@ -1,10 +1,13 @@
 export {
   WakuClient,
+  WakuConnectionError,
   WakuRpcError,
   daemonUrl,
   type ConnectionStateListener,
   type EventListener,
+  type RequestOptions,
   type WakuClientOptions,
+  type WakuConnectionFailure,
   type WakuConnectionState,
   type WebSocketLike,
 } from "./client";

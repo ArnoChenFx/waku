@@ -3,23 +3,20 @@ import { router, Stack } from 'expo-router';
 import { navigateBack } from '@/components/screen-header';
 import { useState } from 'react';
 import {
-  ActivityIndicator,
-  FlatList,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
-  type GestureResponderEvent,
 } from 'react-native';
 
 import { AppSymbol } from '@/components/app-symbol';
-import { ConnectionErrorCard } from '@/components/connection-error-card';
-import { ConnectionStatus } from '@/components/connection-status';
-import { DaemonAvatar } from '@/components/daemon-avatar';
-import { Radius, Spacing } from '@/constants/theme';
+import { ConnectionBanner } from '@/components/connection-banner';
+import { DaemonList } from '@/components/daemon-list';
+import { NativeTint } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useDaemon } from '@/lib/daemon-context';
-import { displayHost, type DaemonProfile } from '@/lib/daemon-profile';
+import type { DaemonProfile } from '@/lib/daemon-profile';
 
 export default function DaemonsScreen() {
   const theme = useTheme();
@@ -56,26 +53,47 @@ export default function DaemonsScreen() {
               <AppSymbol
                 name={{ ios: 'plus', android: 'add', web: 'add' }}
                 size={21}
-                tintColor={theme.accent}
+                tintColor={NativeTint}
               />
             </Pressable>
           ),
+          unstable_headerRightItems: () => [{
+            type: 'button',
+            accessibilityLabel: 'Add daemon',
+            icon: { type: 'sfSymbol', name: 'plus' },
+            label: 'Add daemon',
+            onPress: () => router.push('/daemon-editor'),
+          }],
         }}
       />
-      <FlatList
-        data={daemon.profiles}
-        keyExtractor={(item) => item.id}
+      <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={styles.listContent}
-        ListHeaderComponent={(
+        showsVerticalScrollIndicator={false}>
+        <ConnectionBanner />
+        {daemon.profiles.length ? (
           <>
-            <Text style={[styles.intro, { color: theme.textSecondary }]}>
-              Switch hosts without re-entering credentials. Only the selected daemon stays connected.
-            </Text>
-            {daemon.error ? <ConnectionErrorCard /> : null}
+            <Text style={[styles.sectionTitle, { color: theme.textTertiary }]}>Daemons</Text>
+            <DaemonList
+              selectingId={selectingId}
+              onEdit={(profile) => {
+                router.push({ pathname: '/daemon-editor', params: { id: profile.id } });
+              }}
+              onSelect={(profile) => void select(profile)}
+            />
+            <View style={styles.footer}>
+              <AppSymbol
+                name={{ ios: 'key.horizontal', android: 'key', web: 'key' }}
+                size={14}
+                tintColor={theme.textTertiary}
+              />
+              <Text style={[styles.footerText, { color: theme.textTertiary }]}>
+                Only the selected daemon stays connected. Credentials are protected by the device
+                keychain and never pass through a Waku service.
+              </Text>
+            </View>
           </>
-        )}
-        ListEmptyComponent={(
+        ) : (
           <View style={styles.empty}>
             <Text style={[styles.emptyTitle, { color: theme.text }]}>No saved daemons</Text>
             <Text style={[styles.emptyBody, { color: theme.textSecondary }]}>
@@ -83,100 +101,27 @@ export default function DaemonsScreen() {
             </Text>
           </View>
         )}
-        ListFooterComponent={daemon.profiles.length ? (
-          <View style={styles.footer}>
-            <AppSymbol
-              name={{ ios: 'key.horizontal', android: 'key', web: 'key' }}
-              size={14}
-              tintColor={theme.textTertiary}
-            />
-            <Text style={[styles.footerText, { color: theme.textTertiary }]}>
-              Tokens never pass through a Waku service. Native apps protect them with the device keychain.
-            </Text>
-          </View>
-        ) : null}
-        renderItem={({ item }) => {
-          const active = item.id === daemon.activeProfile?.id;
-          return (
-            <Pressable
-              accessibilityLabel={`${item.name}, ${active ? 'selected' : 'saved daemon'}`}
-              accessibilityRole="button"
-              onPress={() => void select(item)}
-              style={({ pressed }) => [
-                styles.row,
-                {
-                  backgroundColor: pressed ? theme.backgroundSelected : theme.surface,
-                  borderColor: active ? theme.accent : 'transparent',
-                },
-              ]}>
-              <DaemonAvatar name={item.name} />
-              <View style={styles.copy}>
-                <View style={styles.nameLine}>
-                  <Text numberOfLines={1} style={[styles.name, { color: theme.text }]}>{item.name}</Text>
-                  {active && <ConnectionStatus phase={daemon.phase} />}
-                </View>
-                <Text numberOfLines={1} style={[styles.host, { color: theme.textSecondary }]}>
-                  {displayHost(item.address)}
-                </Text>
-              </View>
-              {selectingId === item.id ? (
-                <ActivityIndicator color={theme.accent} />
-              ) : active ? (
-                <AppSymbol
-                  name={{ ios: 'checkmark.circle.fill', android: 'check_circle', web: 'check_circle' }}
-                  size={22}
-                  tintColor={theme.accent}
-                />
-              ) : null}
-              <Pressable
-                accessibilityLabel={`Edit ${item.name}`}
-                accessibilityRole="button"
-                hitSlop={10}
-                onPress={(event: GestureResponderEvent) => {
-                  event.stopPropagation();
-                  router.push({ pathname: '/daemon-editor', params: { id: item.id } });
-                }}
-                style={({ pressed }) => [styles.editButton, { opacity: pressed ? 0.45 : 1 }]}>
-                <AppSymbol
-                  name={{ ios: 'ellipsis.circle', android: 'more_horiz', web: 'more_horiz' }}
-                  size={22}
-                  tintColor={theme.textTertiary}
-                />
-              </Pressable>
-            </Pressable>
-          );
-        }}
-        showsVerticalScrollIndicator={false}
-      />
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  listContent: { paddingBottom: 36 },
-  intro: { fontSize: 13.5, lineHeight: 19, margin: Spacing.three, marginBottom: 12 },
-  row: {
-    alignItems: 'center',
-    borderRadius: Radius.large,
-    borderWidth: 1.5,
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 10,
-    marginHorizontal: Spacing.three,
-    minHeight: 76,
-    padding: 12,
+  listContent: { paddingBottom: 36, paddingHorizontal: 16 },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 7,
+    marginLeft: 12,
+    marginTop: 14,
+    textTransform: 'uppercase',
   },
-  copy: { flex: 1, minWidth: 0 },
-  nameLine: { alignItems: 'center', flexDirection: 'row', gap: 9 },
-  name: { flexShrink: 1, fontSize: 16, fontWeight: '700' },
-  host: { fontSize: 12.5, marginTop: 5 },
-  editButton: { alignItems: 'center', height: 42, justifyContent: 'center', width: 34 },
   footer: {
     alignItems: 'flex-start',
     flexDirection: 'row',
     gap: 8,
-    marginHorizontal: 24,
+    marginHorizontal: 12,
     marginTop: 14,
   },
   footerText: { flex: 1, fontSize: 12, lineHeight: 17 },

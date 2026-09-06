@@ -45,12 +45,24 @@
       [
         "expo-build-properties",
         {
+          "ios": {
+            "deploymentTarget": "16.4"
+          },
           "android": {
             "usesCleartextTraffic": true
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Waku to choose photos to attach to tasks.",
+          "cameraPermission": "Allow Waku to take photos to attach to tasks.",
+          "microphonePermission": false
+        }
+      ],
+      "./plugins/with-paste-input"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -13,7 +13,7 @@ import { turnAnswerStart, turnFoldLabel } from '@waku/client/transcript-presenta
 import type { MarkdownBlock } from '../md/parse';
 import { TranscriptMarkdownCache } from '../md/transcript-cache';
 
-export type SessionGroupId = 'today' | 'yesterday' | 'week' | 'older';
+export type SessionGroupId = 'today' | 'yesterday' | 'week' | 'month' | 'year' | 'more';
 
 export interface SessionListItem {
   session: AgentSession;
@@ -56,7 +56,16 @@ export type TranscriptRow =
       footerTimestamp: number | null;
       topGap: number;
     }
-  | { kind: 'activities'; key: string; turnId: string | null; block: TranscriptBlock; live: boolean; topGap: number }
+  | {
+      kind: 'activities';
+      key: string;
+      turnId: string | null;
+      block: TranscriptBlock;
+      /** Position in `session.transcript_blocks`: the sheet's locator hint. */
+      blockIndex: number;
+      live: boolean;
+      topGap: number;
+    }
   | {
       kind: 'fold';
       key: string;
@@ -78,8 +87,10 @@ const GAP_BLOCK = 12;
 const GROUPS: Array<{ id: SessionGroupId; title: string }> = [
   { id: 'today', title: 'Today' },
   { id: 'yesterday', title: 'Yesterday' },
-  { id: 'week', title: 'Previous 7 Days' },
-  { id: 'older', title: 'Earlier' },
+  { id: 'week', title: 'This Week' },
+  { id: 'month', title: 'This Month' },
+  { id: 'year', title: 'This Year' },
+  { id: 'more', title: 'More' },
 ];
 
 export function displaySessionTitle(session: AgentSession): string {
@@ -94,7 +105,9 @@ export function sessionHasStarted(session: AgentSession): boolean {
 }
 
 export function sessionTimestamp(session: AgentSession): number {
-  return session.last_reply_at ?? session.updated_at ?? session.created_at;
+  // Match desktop: a submitted/replied turn promotes the task, while metadata
+  // edits such as rename leave it in its existing date group.
+  return session.last_reply_at ?? session.created_at;
 }
 
 export function groupSessions(
@@ -126,11 +139,19 @@ export function sessionDateGroup(timestamp: number, now = new Date()): SessionGr
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const day = new Date(timestamp * 1_000);
   const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
-  const elapsedDays = Math.floor((start - dayStart) / 86_400_000);
-  if (elapsedDays <= 0) return 'today';
-  if (elapsedDays === 1) return 'yesterday';
-  if (elapsedDays <= 7) return 'week';
-  return 'older';
+  if (dayStart >= start) return 'today';
+
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
+  if (dayStart === yesterday) return 'yesterday';
+
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+  if (dayStart >= weekStart.getTime()) return 'week';
+  if (day.getFullYear() === now.getFullYear() && day.getMonth() === now.getMonth()) {
+    return 'month';
+  }
+  if (day.getFullYear() === now.getFullYear()) return 'year';
+  return 'more';
 }
 
 export function relativeSessionTime(timestamp: number, now = Date.now()): string {
@@ -178,6 +199,30 @@ export function contextPercent(session: AgentSession): number | null {
 }
 
 /**
+ * Locator for one tool group, as handed to the activity sheet. Every stream
+ * commit deep-clones the session, so the sheet keeps this rather than the
+ * block and re-resolves it against the freshest session on each render. The
+ * index is a hint checked against the anchor; a block that moved (a rewind
+ * dropped an earlier turn) is found again by its anchor.
+ */
+export interface ActivityGroupTarget {
+  blockIndex: number;
+  turnId: string | null;
+  afterMessage: number;
+}
+
+export function findActivityBlock(
+  session: AgentSession,
+  target: ActivityGroupTarget,
+): TranscriptBlock | null {
+  const matches = (block: TranscriptBlock) =>
+    block.turn_id === target.turnId && block.after_message === target.afterMessage;
+  const hinted = session.transcript_blocks[target.blockIndex];
+  if (hinted && matches(hinted)) return hinted;
+  return session.transcript_blocks.find(matches) ?? null;
+}
+
+/**
  * Message-granular pipeline rows — the cheap, parse-free skeleton of the
  * transcript. Assistant messages expand into `md` block rows only for the
  * slice that is actually rendered (see `expandTranscriptRows`), so opening a
@@ -186,7 +231,7 @@ export function contextPercent(session: AgentSession): number | null {
  */
 export type TranscriptPipelineRow =
   | { kind: 'message'; key: string; turnId: string | null; message: Message; footerTimestamp: number | null }
-  | { kind: 'activities'; key: string; turnId: string | null; block: TranscriptBlock; live: boolean }
+  | { kind: 'activities'; key: string; turnId: string | null; block: TranscriptBlock; blockIndex: number; live: boolean }
   | { kind: 'fold'; key: string; turnId: string | null; turn: AgentTurn; label: string; expanded: boolean }
   | { kind: 'changed'; key: string; turnId: string | null; checkpoint: Checkpoint };
 
@@ -242,6 +287,7 @@ export function buildTranscriptPipeline(
           key: `activity:${index}:${block.turn_id ?? 'none'}:${block.after_message}`,
           turnId: block.turn_id,
           block,
+          blockIndex: index,
           live: Boolean(
             runningTurnId && block.turn_id === runningTurnId && block === latestBlock &&
               block.after_message === session.messages.length,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { AgentSession, Project, SequencedEvent } from '@waku/client';
+import type { AgentSession, MessageAttachment, Project, SequencedEvent } from '@waku/client';
 
 import {
   applySessionOptions,
@@ -9,6 +9,7 @@ import {
   runtimeEventAlreadyApplied,
   sessionBusy,
   sessionCwd,
+  sessionIsRunning,
   shouldApplyRuntimeEvent,
 } from './mobile-runtime';
 
@@ -28,6 +29,33 @@ describe('mobile runtime projection', () => {
       created_at: 42,
     });
     expect(started.turns.at(-1)).toMatchObject({ id: 'id-1', status: 'running' });
+  });
+
+  test('keeps attachment presentation separate from the provider prompt', () => {
+    let id = 0;
+    const started = beginTurn(session(), 'Review this', {
+      nowSeconds: () => 42,
+      randomUUID: () => `id-${++id}`,
+    }, [attachment]);
+    expect(started.messages.at(-1)).toMatchObject({
+      content: 'Review this @/daemon/file.png',
+      display_content: 'Review this',
+      attachments: [attachment],
+    });
+  });
+
+  test('allows an attachment-only turn and uses its name for the title', () => {
+    let id = 0;
+    const started = beginTurn(session(), '', {
+      nowSeconds: () => 42,
+      randomUUID: () => `id-${++id}`,
+    }, [attachment]);
+    expect(started.auto_title).toBe('file.png');
+    expect(started.messages.at(-1)).toMatchObject({
+      content: '@/daemon/file.png',
+      display_content: '',
+      attachments: [attachment],
+    });
   });
 
   test('uses a worktree path and rejects replayed runtime events', () => {
@@ -83,18 +111,22 @@ describe('mobile runtime projection', () => {
     });
   });
 
-  test('creates a draft carrying the chosen model and access mode', () => {
+  test('creates a draft carrying the chosen model traits and access mode', () => {
     const created = createSession('project', 'codex', false, {
       nowSeconds: () => 50,
       randomUUID: () => 'new-session',
     }, {
       model: 'gpt-5-codex',
       reasoningEffort: 'high',
+      serviceTier: 'fast',
+      contextWindow: '1m',
       runtimeMode: 'ask',
     });
     expect(created).toMatchObject({
       model: 'gpt-5-codex',
       reasoning_effort: 'high',
+      service_tier: 'fast',
+      context_window: '1m',
       runtime_mode: 'ask',
     });
   });
@@ -118,22 +150,80 @@ describe('mobile runtime projection', () => {
     expect(busy.queued_messages ?? []).toEqual([]);
   });
 
+  test('uses a hydrated turn to correct a lagging running status', () => {
+    expect(sessionIsRunning(session({ status: 'working', turns: [] }))).toBe(true);
+    expect(sessionIsRunning(session({
+      status: 'working',
+      turns: [{
+        id: 'running',
+        turn_count: 1,
+        status: 'running',
+        provider_turn_started: true,
+        provider_resume_at: null,
+        started_at: 10,
+        completed_at: null,
+        checkpoint: null,
+      }],
+    }))).toBe(true);
+    expect(sessionIsRunning(session({
+      status: 'working',
+      turns: [{
+        id: 'completed',
+        turn_count: 1,
+        status: 'completed',
+        provider_turn_started: true,
+        provider_resume_at: null,
+        started_at: 10,
+        completed_at: 20,
+        checkpoint: null,
+      }],
+    }))).toBe(false);
+  });
+
+  test('retains attachments in a queued submission', () => {
+    const queued = queueSubmission(session({ status: 'working' }), '', {
+      nowSeconds: () => 99,
+      randomUUID: () => 'queued',
+    }, [attachment]);
+    expect(queued.queued_messages).toEqual([{
+      id: 'queued',
+      content: '@/daemon/file.png',
+      display_content: '',
+      attachments: [attachment],
+      created_at: 99,
+    }]);
+  });
+
   test('applies option changes without clobbering unrelated fields', () => {
-    const current = session({ model: 'old', reasoning_effort: 'low' });
+    const current = session({
+      model: 'old',
+      reasoning_effort: 'low',
+      service_tier: 'default',
+      context_window: '200k',
+    });
     const next = applySessionOptions(current, { model: 'new-model' }, {
       nowSeconds: () => 77,
       randomUUID: () => 'unused',
     });
     expect(next.model).toBe('new-model');
     expect(next.reasoning_effort).toBe('low');
+    expect(next.service_tier).toBe('default');
+    expect(next.context_window).toBe('200k');
     expect(next.runtime_mode).toBe(current.runtime_mode);
     expect(next.updated_at).toBe(77);
-    const cleared = applySessionOptions(current, { model: null, reasoningEffort: null }, {
+    const cleared = applySessionOptions(current, {
+      model: null,
+      reasoningEffort: null,
+      serviceTier: 'fast',
+      contextWindow: '1m',
+    }, {
       nowSeconds: () => 78,
       randomUUID: () => 'unused',
     });
     expect(cleared.model).toBeNull();
     expect(cleared.reasoning_effort).toBeNull();
+    expect(cleared.service_tier).toBe('fast');
+    expect(cleared.context_window).toBe('1m');
   });
 });
 
@@ -157,3 +247,12 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     ...overrides,
   };
 }
+
+const attachment: MessageAttachment = {
+  path: '/daemon/file.png',
+  mention: '/daemon/file.png',
+  name: 'file.png',
+  is_dir: false,
+  is_image: true,
+  blob_reference: 'waku-attachment:file',
+};

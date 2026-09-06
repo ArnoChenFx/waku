@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 
 const TAB_SCROLL_FADE_WIDTH: f32 = 24.0;
+const REVIEW_DIFF_FILE_HEADER_HEIGHT: f32 = 36.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct WorkingTreeEntry {
@@ -3684,12 +3685,14 @@ impl Waku {
                 )
                 .into_any_element();
         }
+        let sticky_header = self.render_right_panel_diff_sticky_header(&snapshot, cx);
         let entity = cx.entity().downgrade();
         div()
             .flex_1()
             .min_h_0()
             .min_w_0()
             .relative()
+            .overflow_hidden()
             .child(
                 list(
                     self.right_panel_diff_list_state.clone(),
@@ -3706,10 +3709,102 @@ impl Waku {
                 )
                 .size_full(),
             )
+            .when_some(sticky_header, |container, header| container.child(header))
             .child(scrollbar::vertical(
                 &self.right_panel_diff_list_state,
                 &self.right_panel_diff_scrollbar,
             ))
+            .into_any_element()
+    }
+
+    fn render_right_panel_diff_sticky_header(
+        &self,
+        snapshot: &ReviewDiffSnapshot,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let scroll_top = self.right_panel_diff_list_state.logical_scroll_top();
+        let (header_index, next_header_index) = snapshot.file_headers_around(scroll_top.item_ix)?;
+        let needs_sticky = header_index < scroll_top.item_ix
+            || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
+        if !needs_sticky {
+            return None;
+        }
+
+        let line = snapshot.lines.get(header_index)?;
+        let file = snapshot.files.get(line.file_index)?;
+        let top_offset = next_header_index
+            .and_then(|next_header_index| {
+                let bounds = self
+                    .right_panel_diff_list_state
+                    .bounds_for_item(next_header_index)?;
+                let viewport = self.right_panel_diff_list_state.viewport_bounds();
+                let y_in_viewport = bounds.origin.y - viewport.origin.y;
+                (y_in_viewport < bounds.size.height).then_some(y_in_viewport - bounds.size.height)
+            })
+            .unwrap_or(px(0.));
+
+        Some(
+            div()
+                .absolute()
+                .top(top_offset)
+                .left_0()
+                .w_full()
+                .child(self.render_right_panel_diff_file_header(header_index, file, true, cx))
+                .into_any_element(),
+        )
+    }
+
+    fn render_right_panel_diff_file_header(
+        &self,
+        index: usize,
+        file: &crate::review_diff::File,
+        sticky: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::current(cx);
+        let id_prefix = if sticky {
+            "review-diff-sticky-file"
+        } else {
+            "review-diff-file"
+        };
+        div()
+            .id(SharedString::from(format!("{id_prefix}-{index}")))
+            .w_full()
+            .min_w_0()
+            .h(px(REVIEW_DIFF_FILE_HEADER_HEIGHT))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .when(sticky, |header| header.block_mouse_except_scroll())
+            .child(file_icon(file_icon_for_path(&file.path), 14.0))
+            .child(
+                div()
+                    .id(SharedString::from(format!("{id_prefix}-path-{index}")))
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_secondary)
+                    .tooltip(Tooltip::text(file.path.clone()))
+                    .child(file.path.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(theme.success)
+                    .child(format!("+{}", file.additions)),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(theme.danger)
+                    .child(format!("-{}", file.deletions)),
+            )
             .into_any_element()
     }
 
@@ -3729,44 +3824,9 @@ impl Waku {
         let gutter_width = style.gutter_width();
 
         match &line.kind {
-            crate::review_diff::LineKind::FileHeader => div()
-                .id(SharedString::from(format!("review-diff-file-{index}")))
-                .w_full()
-                .min_w_0()
-                .h(px(36.0))
-                .px(px(12.0))
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .border_b_1()
-                .border_color(theme.border)
-                .bg(theme.surface)
-                .child(file_icon(file_icon_for_path(&file.path), 14.0))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("review-diff-file-path-{index}")))
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_secondary)
-                        .tooltip(Tooltip::text(file.path.clone()))
-                        .child(file.path.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.5))
-                        .text_color(theme.success)
-                        .child(format!("+{}", file.additions)),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.5))
-                        .text_color(theme.danger)
-                        .child(format!("-{}", file.deletions)),
-                )
-                .into_any_element(),
+            crate::review_diff::LineKind::FileHeader => {
+                self.render_right_panel_diff_file_header(index, file, false, cx)
+            }
             crate::review_diff::LineKind::Gap(gap) => {
                 let expandable = gap.is_expandable();
                 let chunked = gap.count() > crate::review_diff::DEFAULT_EXPANSION_LINE_COUNT as u32;

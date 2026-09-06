@@ -6,8 +6,11 @@ import type {
   Project,
   ProviderKind,
   ProviderProbe,
+  ReviewDiffData,
+  ReviewDiffSource,
   ResponsePayload,
   WakuClient,
+  WorkingTreeEntry,
   WorkspaceResult,
 } from '@waku/client';
 
@@ -40,6 +43,27 @@ export const daemonKeys = {
     profileId,
     'branches',
     cwd,
+  ] as const,
+  workspaceTree: (profileId: string, root: string, expandedPaths: string[]) => [
+    'daemon',
+    profileId,
+    'workspace-tree',
+    root,
+    expandedPaths,
+  ] as const,
+  workspaceFile: (profileId: string, root: string, relativePath: string) => [
+    'daemon',
+    profileId,
+    'workspace-file',
+    root,
+    relativePath,
+  ] as const,
+  workspaceDiff: (profileId: string, root: string, source: ReviewDiffSource) => [
+    'daemon',
+    profileId,
+    'workspace-diff',
+    root,
+    source,
   ] as const,
 };
 
@@ -226,6 +250,60 @@ export async function inspectBranches(
     throw new Error('The daemon returned an unexpected branches response');
   }
   return response.result.snapshot;
+}
+
+export async function listWorkspaceTree(
+  client: WakuClient,
+  root: string,
+  expandedPaths: string[],
+): Promise<WorkingTreeEntry[]> {
+  const response = expectResponse(
+    await client.request({
+      type: 'workspace',
+      operation: { type: 'listTree', root, expanded_paths: expandedPaths },
+    }),
+    'workspace',
+  );
+  if (response.result.type !== 'workingTree') {
+    throw new Error('The daemon returned an unexpected file tree');
+  }
+  return response.result.entries;
+}
+
+export async function readWorkspaceTextFile(
+  client: WakuClient,
+  root: string,
+  relativePath: string,
+): Promise<string> {
+  const response = expectResponse(
+    await client.request({
+      type: 'workspace',
+      operation: { type: 'readTextFile', root, relative_path: relativePath },
+    }),
+    'workspace',
+  );
+  if (response.result.type !== 'textFile') {
+    throw new Error('The daemon returned an unexpected file response');
+  }
+  return response.result.content;
+}
+
+export async function collectWorkspaceDiff(
+  client: WakuClient,
+  cwd: string,
+  source: ReviewDiffSource = 'uncommitted',
+): Promise<ReviewDiffData> {
+  const response = expectResponse(
+    await client.request({
+      type: 'workspace',
+      operation: { type: 'collectReviewDiff', cwd, source },
+    }),
+    'workspace',
+  );
+  if (response.result.type !== 'reviewDiff') {
+    throw new Error('The daemon returned an unexpected diff response');
+  }
+  return response.result.data;
 }
 
 export async function removeDaemonSession(

@@ -90,6 +90,21 @@ export function reduceRuntimeEvent(
     case 'availableCommands':
       if (Array.isArray(payload)) session.available_commands = payload as ReportedCommand[]
       break
+    case 'promptSubmitted': {
+      // A prompt reached this runtime — from another client, or the echo of
+      // this one. Mirror the desktop's `adopt_submitted_prompt`, reusing the
+      // submitter's ids so every client's projection names the same rows.
+      const value = asRecord(payload)
+      if (!value || typeof value.message !== 'string') break
+      adoptSubmittedPrompt(
+        session,
+        value.message,
+        typeof value.turnId === 'string' ? value.turnId : clock.randomUUID(),
+        typeof value.messageId === 'string' ? value.messageId : clock.randomUUID(),
+        clock,
+      )
+      break
+    }
     case 'turnStarted': {
       const turn = activeTurn(session)
       if (turn) {
@@ -311,6 +326,58 @@ function asUserInputQuestion(value: unknown): PendingUserInput['questions'][numb
       : [],
     multiSelect: question.multiSelect === true,
   }
+}
+
+/** A running turn that already has a user message is the submitter's own
+ * turn, or one hydrated after the submission was saved: leave it. A running
+ * turn without one is a provider-started turn this client was following, and
+ * the submission is its prompt. Otherwise open the turn here as the submitter
+ * did, under the submitter's ids. */
+function adoptSubmittedPrompt(
+  session: AgentSession,
+  message: string,
+  turnId: string,
+  messageId: string,
+  clock: ReducerClock,
+) {
+  const now = clock.nowSeconds()
+  const active = activeTurn(session)
+  if (active) {
+    const hasPrompt = session.messages.some(
+      (candidate) => candidate.turn_id === active.id && candidate.role === 'user',
+    )
+    if (hasPrompt) return
+    session.messages.push({
+      id: messageId,
+      turn_id: active.id,
+      role: 'user',
+      content: message,
+      created_at: now,
+      streaming: false,
+    })
+    return
+  }
+  setTitleFromPrompt(session, message)
+  session.turns.push({
+    id: turnId,
+    turn_count: session.turns.length + 1,
+    status: 'running',
+    provider_turn_started: false,
+    provider_resume_at: null,
+    started_at: now,
+    completed_at: null,
+    checkpoint: null,
+  })
+  session.messages.push({
+    id: messageId,
+    turn_id: turnId,
+    role: 'user',
+    content: message,
+    created_at: now,
+    streaming: false,
+  })
+  session.status = 'connecting'
+  session.last_reply_at = now
 }
 
 function appendText(session: AgentSession, delta: string, clock: ReducerClock) {

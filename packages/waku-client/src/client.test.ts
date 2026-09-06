@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { WakuClient, WakuRpcError, daemonUrl, type WebSocketLike } from "./client";
+import {
+  WakuClient,
+  WakuConnectionError,
+  WakuRpcError,
+  daemonUrl,
+  type WebSocketLike,
+} from "./client";
 import { PROTOCOL_VERSION } from "./generated";
 
 class FakeSocket implements WebSocketLike {
@@ -295,4 +301,142 @@ describe("WakuClient", () => {
 test("daemonUrl pins the versioned endpoint", () => {
   expect(daemonUrl("localhost:3030/anything?old=1")).toBe("ws://localhost:3030/v1");
   expect(daemonUrl("wss://waku.example.test")).toBe("wss://waku.example.test/v1");
+});
+
+describe("WakuClient connection failures", () => {
+  async function failure(setup: (socket: FakeSocket) => void): Promise<WakuConnectionError> {
+    const { client, sockets } = fixture();
+    const connected = client.connect();
+    setup(sockets[0]!);
+    const error = await connected.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(WakuConnectionError);
+    return error as WakuConnectionError;
+  }
+
+  test("types handshake failures so callers can tell what needs a person", async () => {
+    const rejected = await failure((socket) => {
+      socket.open();
+      socket.receive({ type: "rejected", message: "authentication failed" });
+    });
+    expect(rejected.kind).toBe("rejected");
+    expect(rejected.retryable).toBe(false);
+    expect(rejected.message).toBe("daemon rejected connection: authentication failed");
+
+    const unsupported = await failure((socket) => {
+      socket.open();
+      socket.receive({ type: "rejected", message: "protocol 3 is unsupported; expected 7" });
+    });
+    expect(unsupported.kind).toBe("protocol");
+
+    const mismatch = await failure((socket) => {
+      socket.open();
+      socket.receive({ type: "hello", protocolVersion: PROTOCOL_VERSION + 1, daemonVersion: "x" });
+    });
+    expect(mismatch.kind).toBe("protocol");
+    expect(mismatch.retryable).toBe(false);
+
+    const garbage = await failure((socket) => {
+      socket.open();
+      socket.receive({ type: "event", sessionId: "x" });
+    });
+    expect(garbage.kind).toBe("handshake");
+
+    const refused = await failure((socket) => socket.fail("Connection refused"));
+    expect(refused.kind).toBe("unreachable");
+    expect(refused.retryable).toBe(true);
+    expect(refused.message).toBe("Connection refused");
+  });
+
+  test("times out a handshake the daemon never answers", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new WakuClient({
+      address: "127.0.0.1:4312",
+      token: "secret",
+      connectTimeoutMs: 1,
+      randomUUID: () => "00000000-0000-4000-8000-000000000001",
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const error = (await client.connect().catch((cause: unknown) => cause)) as WakuConnectionError;
+    expect(error.kind).toBe("timeout");
+    expect(error.retryable).toBe(true);
+    expect(client.connectionState).toBe("disconnected");
+    expect(sockets[0]!.readyState).toBe(3);
+
+    // The abandoned socket's late events are ignored and a fresh attempt works.
+    sockets[0]!.open();
+    const again = client.connect();
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.open();
+    sockets[1]!.receive({ type: "hello", protocolVersion: PROTOCOL_VERSION, daemonVersion: "test" });
+    await again;
+    expect(client.connected).toBe(true);
+  });
+
+  test("lets a request shorten its own timeout", async () => {
+    const { client, sockets } = fixture();
+    await connect(client, sockets);
+    await expect(
+      client.request({ type: "getSettings" }, undefined, undefined, { timeoutMs: 1 }),
+    ).rejects.toThrow("timed out waiting for Waku daemon");
+  });
+
+  test("settles requests and clears the socket before listeners hear a remote close", async () => {
+    const { client, sockets } = fixture();
+    const socket = await connect(client, sockets);
+    const request = client.request({ type: "getSettings" });
+    let reconnected: Promise<void> | null = null;
+    client.subscribeConnectionState((state) => {
+      if (state === "disconnected" && !reconnected) reconnected = client.connect();
+    });
+
+    socket.fail("Software caused connection abort");
+    const error = (await request.catch((cause: unknown) => cause)) as WakuConnectionError;
+    expect(error.kind).toBe("closed");
+    expect(client.lastDisconnectReason).toBe("Software caused connection abort");
+    expect(sockets).toHaveLength(2);
+
+    sockets[1]!.open();
+    sockets[1]!.receive({ type: "hello", protocolVersion: PROTOCOL_VERSION, daemonVersion: "test" });
+    await reconnected!;
+    expect(client.connected).toBe(true);
+    const next = client.request({ type: "getSettings" });
+    expect(sockets[1]!.sent).toHaveLength(2);
+    const sent = JSON.parse(sockets[1]!.sent[1]!) as { requestId: string };
+    sockets[1]!.receive({
+      type: "response",
+      requestId: sent.requestId,
+      outcome: { status: "ok", payload: { type: "ack" } },
+    });
+    await expect(next).resolves.toEqual({ type: "ack" });
+  });
+
+  test("records when the daemon last spoke", async () => {
+    const sockets: FakeSocket[] = [];
+    let now = 41;
+    const client = new WakuClient({
+      address: "127.0.0.1:4312",
+      token: "secret",
+      now: () => now,
+      randomUUID: () => "00000000-0000-4000-8000-000000000001",
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    expect(client.lastMessageAt).toBe(0);
+    const connected = client.connect();
+    now = 42;
+    sockets[0]!.open();
+    sockets[0]!.receive({ type: "hello", protocolVersion: PROTOCOL_VERSION, daemonVersion: "test" });
+    await connected;
+    expect(client.lastMessageAt).toBe(42);
+    now = 43;
+    sockets[0]!.receive({ type: "taskStateChanged", revision: 1 });
+    expect(client.lastMessageAt).toBe(43);
+  });
 });

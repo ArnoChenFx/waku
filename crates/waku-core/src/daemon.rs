@@ -26,6 +26,22 @@ use crate::persistence::{ComposerDraftStore, PersistedState, StateStore};
 use crate::settings::DaemonSettingsStore;
 use waku_protocol::provider_session::{ProviderSessionFork, ProviderSessionForkRequest};
 
+/// How many fully hydrated transcripts the daemon keeps resident.
+///
+/// Hydration is a cache: consumers reload a released session from the store on
+/// demand. Without a cap, a daemon that lives for days adopts the transcript
+/// of every session its clients have touched — SaveTaskState pushes, hydrate
+/// requests, forks, checkpoints — and resident memory grows without bound.
+const RESIDENT_TRANSCRIPT_WINDOW: usize = 24;
+
+/// Releases resident transcripts beyond the recency window after a save.
+/// `pinned` names sessions with live runtimes; dirty sessions are skipped
+/// inside [`PersistedState::trim_idle_transcripts`] because they hold unsaved
+/// work.
+fn trim_resident_transcripts(state: &mut PersistedState, pinned: &HashSet<Uuid>) {
+    state.trim_idle_transcripts(pinned, RESIDENT_TRANSCRIPT_WINDOW);
+}
+
 pub struct WakuBackend {
     sessions: Mutex<HashMap<Uuid, (Uuid, DriverHandle)>>,
     terminals: Mutex<HashMap<Uuid, (Uuid, crate::terminal::DaemonTerminal)>>,
@@ -382,6 +398,10 @@ impl Backend for WakuBackend {
                             .cloned()
                     })
                     .collect();
+                // The save above can adopt full transcripts for every session
+                // the client touched. Keep only the recent window resident;
+                // the echoed clones above still carry the saved detail.
+                trim_resident_transcripts(&mut state, &active_runtimes.keys().copied().collect());
                 Ok(ResponsePayload::TaskStateSaved { sessions })
             }
             Command::RemoveSession => {
@@ -415,6 +435,9 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::Ack)
             }
             Command::HydrateSession { session_id } => {
+                // Live runtimes stay resident; everything else is trimmed to
+                // the recency window once the response is built.
+                let pinned = self.sessions.lock().keys().copied().collect();
                 let mut state = self.task_state.lock();
                 let session = if let Some(session) = state
                     .sessions
@@ -426,6 +449,7 @@ impl Backend for WakuBackend {
                 } else {
                     None
                 };
+                trim_resident_transcripts(&mut state, &pinned);
                 Ok(ResponsePayload::Session { session })
             }
             Command::SearchSessionMessages { query, limit } => {
@@ -793,6 +817,25 @@ impl Backend for WakuBackend {
                     }
                     driver.clone()
                 };
+                if let Command::Prompt {
+                    prompt,
+                    turn_id,
+                    message_id,
+                } = &command
+                {
+                    // Publish the submission into the runtime's event stream
+                    // before the provider can start the turn. Every attached
+                    // client mirrors the user message and its turn from this
+                    // event, so the submitting client's own save is no longer
+                    // the only record of the prompt — a follower that only
+                    // knew the provider's `turnStarted` used to persist a
+                    // projection without it, erasing the message for everyone.
+                    events.send(event_to_wire(DriverEvent::PromptSubmitted {
+                        message: prompt.clone(),
+                        turn_id: turn_id.unwrap_or_else(Uuid::new_v4),
+                        message_id: message_id.unwrap_or_else(Uuid::new_v4),
+                    })?)?;
+                }
                 handle_driver_command(&driver, command)
             }
         }
@@ -962,6 +1005,7 @@ impl WakuBackend {
                 .err()
                 .map(|error| error.to_string());
 
+        let pinned = self.sessions.lock().keys().copied().collect();
         let mut state = self.task_state.lock();
         state.push_session(forked.clone());
         if let Err(error) = self.task_store.save(&mut state) {
@@ -969,6 +1013,7 @@ impl WakuBackend {
             let _ = crate::checkpoint::delete_all_session_refs(&cwd, fork_id);
             return Err(error).context("could not save the forked task");
         }
+        trim_resident_transcripts(&mut state, &pinned);
         Ok((forked, checkpoint_warning))
     }
 
@@ -1100,6 +1145,7 @@ impl WakuBackend {
         rewound.truncate_after_turn(retained_turn_count);
         rewound.status = SessionStatus::Idle;
 
+        let pinned = self.sessions.lock().keys().copied().collect();
         let mut state = self.task_state.lock();
         let existing = state
             .sessions
@@ -1111,6 +1157,7 @@ impl WakuBackend {
         self.task_store
             .save(&mut state)
             .context("could not save the rewound task")?;
+        trim_resident_transcripts(&mut state, &pinned);
         Ok((rewound, cleanup_warning))
     }
 
@@ -1662,7 +1709,7 @@ fn handle_driver_command(
     command: Command,
 ) -> anyhow::Result<ResponsePayload> {
     match command {
-        Command::Prompt { prompt } => driver.prompt(prompt),
+        Command::Prompt { prompt, .. } => driver.prompt(prompt),
         Command::Steer { prompt } => driver.steer(prompt),
         Command::Cancel => driver.cancel(),
         Command::CancelComputerUse => driver.cancel_computer_use(),
@@ -1852,6 +1899,14 @@ fn event_to_wire(event: DriverEvent) -> anyhow::Result<WireDriverEvent> {
                 image_url: state.image_url,
             })?,
         ),
+        DriverEvent::PromptSubmitted {
+            message,
+            turn_id,
+            message_id,
+        } => (
+            "promptSubmitted",
+            json!({ "message": message, "turnId": turn_id, "messageId": message_id }),
+        ),
         DriverEvent::SteerAccepted { message } => ("steerAccepted", json!({ "message": message })),
         DriverEvent::SteerRejected { message, reason } => (
             "steerRejected",
@@ -1929,6 +1984,14 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
                 image_url: state.image_url,
             })
         }
+        "promptSubmitted" => {
+            let submitted: SubmittedPromptWire = serde_json::from_value(payload)?;
+            DriverEvent::PromptSubmitted {
+                message: submitted.message,
+                turn_id: submitted.turn_id,
+                message_id: submitted.message_id,
+            }
+        }
         "steerAccepted" => {
             let steer: AcceptedSteerWire = serde_json::from_value(payload)?;
             DriverEvent::SteerAccepted {
@@ -1962,6 +2025,14 @@ pub fn event_from_wire(event: WireDriverEvent) -> anyhow::Result<DriverEvent> {
         "processExited" => DriverEvent::ProcessExited,
         kind => bail!("daemon sent an unsupported driver event {kind:?}"),
     })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmittedPromptWire {
+    message: String,
+    turn_id: Uuid,
+    message_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -2137,6 +2208,27 @@ mod tests {
         assert!(matches!(
             event_from_wire(wire).unwrap(),
             DriverEvent::TextDelta(text) if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn wire_event_round_trip_preserves_prompt_submission_identity() {
+        let turn_id = Uuid::new_v4();
+        let message_id = Uuid::new_v4();
+        let wire = event_to_wire(DriverEvent::PromptSubmitted {
+            message: "ship it".into(),
+            turn_id,
+            message_id,
+        })
+        .unwrap();
+        assert_eq!(wire.kind, "promptSubmitted");
+        assert_eq!(wire.payload["message"], "ship it");
+        assert_eq!(wire.payload["turnId"], turn_id.to_string());
+        assert_eq!(wire.payload["messageId"], message_id.to_string());
+        assert!(matches!(
+            event_from_wire(wire).unwrap(),
+            DriverEvent::PromptSubmitted { message, turn_id: decoded_turn, message_id: decoded_message }
+                if message == "ship it" && decoded_turn == turn_id && decoded_message == message_id
         ));
     }
 }

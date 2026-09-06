@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { AgentSession, AgentTurn, Project } from '@waku/client';
+import { activitiesForBlock } from '@waku/client/event-reducer';
 
 import { TranscriptMarkdownCache } from '../md/transcript-cache';
 import {
@@ -8,6 +9,7 @@ import {
   contextPercent,
   displaySessionTitle,
   expandTranscriptRows,
+  findActivityBlock,
   groupSessions,
   relativeSessionTime,
   sessionDateGroup,
@@ -21,25 +23,33 @@ describe('mobile session presentation', () => {
     );
   });
 
-  test('groups started sessions by local day and newest first', () => {
+  test('groups started sessions by the desktop calendar periods, newest first', () => {
     const now = new Date(2026, 7, 31, 12);
     const projects: Project[] = [{ id: 'project', name: 'Waku', path: '/waku', created_at: 1 }];
     const current = session({ id: 'new', last_reply_at: epoch(2026, 7, 31, 11) });
     const yesterday = session({ id: 'old', last_reply_at: epoch(2026, 7, 30, 20) });
+    const earlier = session({ id: 'earlier', last_reply_at: epoch(2026, 7, 20, 20) });
     const empty = session({ id: 'empty', last_reply_at: null, messages: [], turns: [] });
-    expect(groupSessions(projects, [yesterday, empty, current], now).map((group) => ({
+    expect(groupSessions(projects, [earlier, yesterday, empty, current], now).map((group) => ({
       id: group.id,
       sessions: group.data.map((item) => item.session.id),
     }))).toEqual([
       { id: 'today', sessions: ['new'] },
       { id: 'yesterday', sessions: ['old'] },
+      { id: 'month', sessions: ['earlier'] },
     ]);
   });
 
   test('formats compact recency labels', () => {
     expect(relativeSessionTime(1_000, 1_030_000)).toBe('Now');
     expect(relativeSessionTime(1_000, 1_300_000)).toBe('5m');
-    expect(sessionDateGroup(epoch(2026, 7, 24, 12), new Date(2026, 7, 31, 12))).toBe('week');
+    const now = new Date(2026, 7, 12, 12);
+    expect(sessionDateGroup(epoch(2026, 7, 12, 12), now)).toBe('today');
+    expect(sessionDateGroup(epoch(2026, 7, 11, 12), now)).toBe('yesterday');
+    expect(sessionDateGroup(epoch(2026, 7, 10, 12), now)).toBe('week');
+    expect(sessionDateGroup(epoch(2026, 7, 1, 12), now)).toBe('month');
+    expect(sessionDateGroup(epoch(2026, 0, 1, 12), now)).toBe('year');
+    expect(sessionDateGroup(epoch(2025, 11, 31, 12), now)).toBe('more');
   });
 
   test('reports context usage as a bounded percentage', () => {
@@ -267,6 +277,27 @@ describe('mobile session presentation', () => {
     expect(stable[2]).not.toBe(before[2]!);
     expect(stable[2]!.kind === 'md' && stable[2].source).toBe('Two more');
     expect(stabilizeTranscriptRows(stable, stabilizeTranscriptRows(stable, after))).toBe(stable);
+  });
+});
+
+describe('activity sheet locator', () => {
+  test('trusts the index hint only while the anchor still matches', () => {
+    const first = activityBlock(0, 'turn');
+    const second = activityBlock(1, 'turn');
+    const current = session({ transcript_blocks: [first, second] });
+    expect(findActivityBlock(current, { blockIndex: 1, turnId: 'turn', afterMessage: 1 })).toBe(second);
+    // A rewind dropped a block in front: the hint is stale, the anchor is not.
+    expect(findActivityBlock(current, { blockIndex: 1, turnId: 'turn', afterMessage: 0 })).toBe(first);
+    expect(findActivityBlock(current, { blockIndex: 0, turnId: 'other', afterMessage: 0 })).toBeNull();
+  });
+
+  test('survives the per-commit clone by resolving against the new session', () => {
+    const before = session({ transcript_blocks: [activityBlock(0, 'turn')] });
+    const after = JSON.parse(JSON.stringify(before)) as AgentSession;
+    activitiesForBlock(after.transcript_blocks[0]!)[0]!.output = 'streamed';
+    const target = { blockIndex: 0, turnId: 'turn', afterMessage: 0 };
+    expect(activitiesForBlock(findActivityBlock(before, target)!)[0]!.output).toBeUndefined();
+    expect(activitiesForBlock(findActivityBlock(after, target)!)[0]!.output).toBe('streamed');
   });
 });
 
