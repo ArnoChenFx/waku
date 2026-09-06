@@ -1095,6 +1095,22 @@ impl AgentSession {
             || self.provider_cursor.is_some()
     }
 
+    /// Drops the loaded transcript so the session returns to its skeleton
+    /// state, releasing the heap its messages, blocks and turns occupied.
+    ///
+    /// A session must be fully persisted and unmodified before this runs —
+    /// callers check the store's dirty set — because the released fields are
+    /// gone until the next store `hydrate` reloads them. The session keeps
+    /// its list columns and cursors, and a later save of the skeleton only
+    /// touches those columns, never the untouched detail row.
+    pub fn release_transcript(&mut self) {
+        self.messages = Vec::new();
+        self.transcript_blocks = Vec::new();
+        self.turns = Vec::new();
+        self.queued_messages = Vec::new();
+        self.detail_loaded = false;
+    }
+
     /// Identifier owned by the underlying agent CLI, once its native session
     /// has been established.
     pub fn provider_native_id(&self) -> Option<&str> {

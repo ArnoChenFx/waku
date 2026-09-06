@@ -26,6 +26,22 @@ use crate::persistence::{ComposerDraftStore, PersistedState, StateStore};
 use crate::settings::DaemonSettingsStore;
 use waku_protocol::provider_session::{ProviderSessionFork, ProviderSessionForkRequest};
 
+/// How many fully hydrated transcripts the daemon keeps resident.
+///
+/// Hydration is a cache: consumers reload a released session from the store on
+/// demand. Without a cap, a daemon that lives for days adopts the transcript
+/// of every session its clients have touched — SaveTaskState pushes, hydrate
+/// requests, forks, checkpoints — and resident memory grows without bound.
+const RESIDENT_TRANSCRIPT_WINDOW: usize = 24;
+
+/// Releases resident transcripts beyond the recency window after a save.
+/// `pinned` names sessions with live runtimes; dirty sessions are skipped
+/// inside [`PersistedState::trim_idle_transcripts`] because they hold unsaved
+/// work.
+fn trim_resident_transcripts(state: &mut PersistedState, pinned: &HashSet<Uuid>) {
+    state.trim_idle_transcripts(pinned, RESIDENT_TRANSCRIPT_WINDOW);
+}
+
 pub struct WakuBackend {
     sessions: Mutex<HashMap<Uuid, (Uuid, DriverHandle)>>,
     terminals: Mutex<HashMap<Uuid, (Uuid, crate::terminal::DaemonTerminal)>>,
@@ -378,6 +394,10 @@ impl Backend for WakuBackend {
                             .cloned()
                     })
                     .collect();
+                // The save above can adopt full transcripts for every session
+                // the client touched. Keep only the recent window resident;
+                // the echoed clones above still carry the saved detail.
+                trim_resident_transcripts(&mut state, &active_runtimes.keys().copied().collect());
                 Ok(ResponsePayload::TaskStateSaved { sessions })
             }
             Command::RemoveSession => {
@@ -411,6 +431,9 @@ impl Backend for WakuBackend {
                 Ok(ResponsePayload::Ack)
             }
             Command::HydrateSession { session_id } => {
+                // Live runtimes stay resident; everything else is trimmed to
+                // the recency window once the response is built.
+                let pinned = self.sessions.lock().keys().copied().collect();
                 let mut state = self.task_state.lock();
                 let session = if let Some(session) = state
                     .sessions
@@ -422,6 +445,7 @@ impl Backend for WakuBackend {
                 } else {
                     None
                 };
+                trim_resident_transcripts(&mut state, &pinned);
                 Ok(ResponsePayload::Session { session })
             }
             Command::SearchSessionMessages { query, limit } => {
@@ -969,6 +993,7 @@ impl WakuBackend {
                 .err()
                 .map(|error| error.to_string());
 
+        let pinned = self.sessions.lock().keys().copied().collect();
         let mut state = self.task_state.lock();
         state.push_session(forked.clone());
         if let Err(error) = self.task_store.save(&mut state) {
@@ -976,6 +1001,7 @@ impl WakuBackend {
             let _ = crate::checkpoint::delete_all_session_refs(&cwd, fork_id);
             return Err(error).context("could not save the forked task");
         }
+        trim_resident_transcripts(&mut state, &pinned);
         Ok((forked, checkpoint_warning))
     }
 
@@ -1107,6 +1133,7 @@ impl WakuBackend {
         rewound.truncate_after_turn(retained_turn_count);
         rewound.status = SessionStatus::Idle;
 
+        let pinned = self.sessions.lock().keys().copied().collect();
         let mut state = self.task_state.lock();
         let existing = state
             .sessions
@@ -1118,6 +1145,7 @@ impl WakuBackend {
         self.task_store
             .save(&mut state)
             .context("could not save the rewound task")?;
+        trim_resident_transcripts(&mut state, &pinned);
         Ok((rewound, cleanup_warning))
     }
 
