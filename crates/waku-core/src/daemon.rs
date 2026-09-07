@@ -45,6 +45,8 @@ fn trim_resident_transcripts(state: &mut PersistedState, pinned: &HashSet<Uuid>)
 pub struct WakuBackend {
     sessions: Mutex<HashMap<Uuid, (Uuid, DriverHandle)>>,
     terminals: Mutex<HashMap<Uuid, (Uuid, crate::terminal::DaemonTerminal)>>,
+    #[cfg(all(test, unix))]
+    terminal_shell: Option<alacritty_terminal::tty::Shell>,
     settings: DaemonSettingsStore,
     task_store: StateStore,
     task_state: Mutex<PersistedState>,
@@ -79,6 +81,8 @@ impl WakuBackend {
         Ok(Self {
             sessions: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
+            #[cfg(all(test, unix))]
+            terminal_shell: None,
             settings,
             task_store,
             task_state: Mutex::new(task_state),
@@ -90,6 +94,33 @@ impl WakuBackend {
             usage_rates_dir,
             default_cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         })
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_terminal_shell(mut self, shell: alacritty_terminal::tty::Shell) -> Self {
+        self.terminal_shell = Some(shell);
+        self
+    }
+
+    fn open_terminal(
+        &self,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+        events: EventSink,
+    ) -> anyhow::Result<crate::terminal::DaemonTerminal> {
+        #[cfg(all(test, unix))]
+        if let Some(shell) = &self.terminal_shell {
+            return crate::terminal::DaemonTerminal::open_with_shell(
+                cwd,
+                cols,
+                rows,
+                events,
+                shell.clone(),
+            );
+        }
+        ensure_shell_environment();
+        crate::terminal::DaemonTerminal::open(cwd, cols, rows, events)
     }
 
     /// Capture and persist one ending checkpoint exactly once per daemon.
@@ -696,8 +727,7 @@ impl Backend for WakuBackend {
                 result: crate::workspace::execute(operation)?,
             }),
             Command::OpenTerminal { cwd, cols, rows } => {
-                ensure_shell_environment();
-                let terminal = crate::terminal::DaemonTerminal::open(&cwd, cols, rows, events)?;
+                let terminal = self.open_terminal(&cwd, cols, rows, events)?;
                 let previous = self
                     .terminals
                     .lock()
