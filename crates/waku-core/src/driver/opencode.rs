@@ -29,8 +29,8 @@ use crate::driver::{
 };
 use crate::http_wire::{Endpoint, StreamControl, open_event_stream};
 use crate::model::{
-    ActivityKind, DriverEvent, PermissionOption, ProviderResumeCursor, RuntimeMode,
-    UserInputAnswer, UserInputOption, UserInputQuestion,
+    ActivityKind, DriverEvent, PermissionOption, ProviderResumeCursor, ReportedCommand,
+    RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 use crate::opencode_pool::PooledServer;
 use crate::opencode_session::{
@@ -40,6 +40,11 @@ use crate::opencode_session::{
 enum CommandMessage {
     Prompt(String),
     Steer(String),
+    NativeCommandFinished {
+        generation: u64,
+        steer: Option<String>,
+        result: Result<(), String>,
+    },
     Cancel,
     Respond {
         request_id: String,
@@ -70,6 +75,79 @@ fn prompt_body(text: &str, model: Option<&str>, variant: Option<&str>, agent: &s
         body["variant"] = json!(variant);
     }
     body
+}
+
+fn native_command_body(
+    text: &str,
+    commands: &HashSet<String>,
+    model: Option<&str>,
+    variant: Option<&str>,
+    agent: &str,
+) -> Option<Value> {
+    let invocation = text.strip_prefix('/')?;
+    let (name, arguments) = invocation
+        .split_once(char::is_whitespace)
+        .unwrap_or((invocation, ""));
+    if !commands.contains(name) {
+        return None;
+    }
+    let mut body = json!({"command": name, "arguments": arguments.trim(), "agent": agent});
+    // The command route takes a provider/model string, unlike prompt_async.
+    if let Some(model) = model {
+        body["model"] = json!(model);
+    }
+    if let Some(variant) = variant.map(str::trim).filter(|variant| !variant.is_empty()) {
+        body["variant"] = json!(variant);
+    }
+    Some(body)
+}
+
+fn start_native_command(
+    port: u16,
+    session_id: &str,
+    body: Value,
+    commands: Sender<CommandMessage>,
+    generation: u64,
+    steer: Option<String>,
+) -> std::io::Result<()> {
+    let path = format!("/session/{}/command", encode_path_segment(session_id));
+    // Unlike prompt_async, /command holds its response until the turn ends.
+    // Keep the control worker free to answer permissions, stop, and steer.
+    // A port alone cannot keep the pooled server alive after driver teardown.
+    thread::Builder::new()
+        .name("waku-opencode-command".into())
+        .spawn(move || {
+            let result = crate::opencode_session::request_json_on_port(
+                port,
+                "POST",
+                &path,
+                Some(&body),
+                Duration::from_secs(30 * 60),
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+            let _ = commands.send(CommandMessage::NativeCommandFinished {
+                generation,
+                steer,
+                result,
+            });
+        })?;
+    Ok(())
+}
+
+fn reject_prompt(error: impl std::fmt::Display, events: &impl DriverEventSink, turn: &Mutex<bool>) {
+    let _ = events.send(DriverEvent::Error(tr!(
+        "errors.provider_rejected_prompt_detail",
+        provider = "OpenCode",
+        error = error
+    )));
+    // session.idle never arrives for a request that failed to start.
+    if std::mem::take(&mut *turn.lock()) {
+        let _ = events.send(DriverEvent::TurnFinished {
+            success: false,
+            summary: Some(tr!("errors.provider_start_turn", provider = "OpenCode")),
+        });
+    }
 }
 
 fn opencode_permission_rules(mode: RuntimeMode) -> Value {
@@ -191,6 +269,25 @@ impl OpenCodeDriver {
                 session_id: session_id.clone(),
             }),
         });
+
+        let catalog = server
+            .request_with_timeout("GET", "/command", None, Duration::from_secs(10))
+            .ok()
+            .map(|value| crate::slash_command_catalog::parse_opencode_commands(&value))
+            .unwrap_or_default();
+        let command_names = catalog
+            .iter()
+            .map(|command| command.name.clone())
+            .collect::<HashSet<_>>();
+        let _ = events.send(DriverEvent::AvailableCommands(
+            catalog
+                .into_iter()
+                .map(|command| ReportedCommand {
+                    name: command.name,
+                    description: command.description,
+                })
+                .collect(),
+        ));
 
         let usage_metadata = Arc::new(OpenCodeUsageMetadata::default());
         let previous_usage_path = format!(
@@ -369,14 +466,36 @@ impl OpenCodeDriver {
         let variant = reasoning_effort;
         let worker_events = events;
         let worker_turn = turn_active;
+        let worker_commands = commands.clone();
         thread::Builder::new()
             .name("waku-opencode-driver".into())
             .spawn(move || {
+                let mut generation = 0_u64;
                 while let Ok(message) = command_rx.recv() {
                     match message {
                         CommandMessage::Prompt(text) => {
+                            generation = generation.wrapping_add(1);
                             *worker_turn.lock() = true;
                             let _ = worker_events.send(DriverEvent::TurnStarted);
+                            if let Some(body) = native_command_body(
+                                &text,
+                                &command_names,
+                                model.as_deref(),
+                                variant.as_deref(),
+                                agent,
+                            ) {
+                                if let Err(error) = start_native_command(
+                                    worker_server.port,
+                                    &worker_session,
+                                    body,
+                                    worker_commands.clone(),
+                                    generation,
+                                    None,
+                                ) {
+                                    reject_prompt(error, &worker_events, &worker_turn);
+                                }
+                                continue;
+                            }
                             // `prompt_async` acknowledges as soon as the prompt
                             // is accepted; completion arrives as `session.idle`
                             // on the event stream. The blocking message route
@@ -387,25 +506,10 @@ impl OpenCodeDriver {
                                 "/session/{}/prompt_async",
                                 encode_path_segment(&worker_session)
                             );
-                            let body = prompt_body(&text, model.as_deref(), variant.as_deref(), agent);
+                            let body =
+                                prompt_body(&text, model.as_deref(), variant.as_deref(), agent);
                             if let Err(error) = worker_server.request("POST", &path, Some(&body)) {
-                                let _ = worker_events.send(DriverEvent::Error(tr!(
-                                    "errors.provider_rejected_prompt_detail",
-                                    provider = "OpenCode",
-                                    error = error
-                                )));
-                                // `session.idle` never arrives for a turn that
-                                // failed to start, so settle it here instead of
-                                // hanging.
-                                if std::mem::take(&mut *worker_turn.lock()) {
-                                    let _ = worker_events.send(DriverEvent::TurnFinished {
-                                        success: false,
-                                        summary: Some(tr!(
-                                            "errors.provider_start_turn",
-                                            provider = "OpenCode"
-                                        )),
-                                    });
-                                }
+                                reject_prompt(error, &worker_events, &worker_turn);
                             }
                         }
                         CommandMessage::Steer(text) => {
@@ -428,11 +532,34 @@ impl OpenCodeDriver {
                                 });
                                 continue;
                             }
+                            if let Some(body) = native_command_body(
+                                &text,
+                                &command_names,
+                                model.as_deref(),
+                                variant.as_deref(),
+                                agent,
+                            ) {
+                                if let Err(error) = start_native_command(
+                                    worker_server.port,
+                                    &worker_session,
+                                    body,
+                                    worker_commands.clone(),
+                                    generation,
+                                    Some(text.clone()),
+                                ) {
+                                    let _ = worker_events.send(DriverEvent::SteerRejected {
+                                        message: text,
+                                        reason: error.to_string(),
+                                    });
+                                }
+                                continue;
+                            }
                             let path = format!(
                                 "/session/{}/prompt_async",
                                 encode_path_segment(&worker_session)
                             );
-                            let body = prompt_body(&text, model.as_deref(), variant.as_deref(), agent);
+                            let body =
+                                prompt_body(&text, model.as_deref(), variant.as_deref(), agent);
                             match worker_server.request("POST", &path, Some(&body)) {
                                 Ok(_) => {
                                     let _ = worker_events
@@ -448,6 +575,26 @@ impl OpenCodeDriver {
                                         ),
                                     });
                                 }
+                            }
+                        }
+                        CommandMessage::NativeCommandFinished {
+                            generation: completed,
+                            steer,
+                            result,
+                        } => {
+                            if let Some(message) = steer {
+                                let event = match result {
+                                    Ok(()) => DriverEvent::SteerAccepted { message },
+                                    Err(reason) => DriverEvent::SteerRejected { message, reason },
+                                };
+                                let _ = worker_events.send(event);
+                            } else if completed == generation
+                                && *worker_turn.lock()
+                                && let Err(error) = result
+                            {
+                                // A late HTTP failure must not fail a newer
+                                // turn or one the event stream already settled.
+                                reject_prompt(error, &worker_events, &worker_turn);
                             }
                         }
                         CommandMessage::Cancel => {
@@ -1134,6 +1281,100 @@ fn tool_activity(part: &Value, events: &impl DriverEventSink, state: &mut OpenCo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_commands_preserve_provider_arguments_and_model_options() {
+        let commands = ["init".to_owned(), "review".to_owned()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            native_command_body(
+                "/review main\nfocus on tests",
+                &commands,
+                Some("openai/gpt-5"),
+                Some("high"),
+                "build"
+            ),
+            Some(json!({
+                "command": "review", "arguments": "main\nfocus on tests", "model": "openai/gpt-5", "variant": "high", "agent": "build"
+            }))
+        );
+        assert_eq!(
+            native_command_body("/init", &commands, None, Some(" "), "build"),
+            Some(json!({
+                "command": "init", "arguments": "", "agent": "build"
+            }))
+        );
+        for text in [
+            "ordinary prompt",
+            "/unknown args",
+            "/reviewer",
+            "Discuss /review",
+        ] {
+            assert!(native_command_body(text, &commands, None, None, "build").is_none());
+        }
+    }
+
+    #[test]
+    fn native_command_http_wait_keeps_control_delivery_unblocked() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (received, requests) = unbounded();
+        let (finish, finish_rx) = unbounded();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let route = line.trim().to_owned();
+            let mut length = 0;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.strip_prefix("Content-Length: ") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            received
+                .send((route, serde_json::from_slice::<Value>(&body).unwrap()))
+                .unwrap();
+            finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .unwrap();
+        });
+        let (commands, command_rx) = unbounded();
+        let body = json!({"command": "review", "arguments": "main"});
+        start_native_command(port, "ses_test", body.clone(), commands.clone(), 7, None).unwrap();
+        let (route, sent) = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(route, "POST /session/ses_test/command HTTP/1.1");
+        assert_eq!(sent, body);
+        commands.send(CommandMessage::Cancel).unwrap();
+        assert!(matches!(
+            command_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            CommandMessage::Cancel
+        ));
+        finish.send(()).unwrap();
+        assert!(matches!(
+            command_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            CommandMessage::NativeCommandFinished {
+                generation: 7,
+                steer: None,
+                result: Ok(())
+            }
+        ));
+        server.join().unwrap();
+    }
 
     fn harness() -> (
         Sender<DriverEvent>,

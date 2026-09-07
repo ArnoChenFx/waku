@@ -29,7 +29,7 @@
 //!   without an error, because the service itself `chdir`s to `$HOME`.
 
 use std::collections::{BTreeMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use serde::de::DeserializeOwned;
@@ -979,6 +979,25 @@ pub(crate) fn prompt(
     decode(data(response, "prompt")?, "prompt")
 }
 
+/// Execute a registered command with provider-owned template expansion and
+/// agent/model selection. Unlike /prompt, this route acknowledges with 204;
+/// execution and completion arrive on the session event stream.
+pub(crate) fn command(
+    endpoint: &Endpoint,
+    session: &str,
+    name: &str,
+    arguments: &str,
+    delivery: Option<Delivery>,
+) -> Result<()> {
+    let path = format!("/api/session/{}/command", encode_path_segment(session));
+    let mut body = json!({"command": name, "text": arguments});
+    if let Some(delivery) = delivery {
+        body["delivery"] = json!(delivery);
+    }
+    request(endpoint, "POST", &path, Some(&body), REQUEST_TIMEOUT)?;
+    Ok(())
+}
+
 /// Lists undelivered inbox entries.
 ///
 /// The entries are left as raw JSON because the union also carries synthetic,
@@ -1162,7 +1181,58 @@ pub(crate) fn list_commands(
     endpoint: &Endpoint,
     directory: Option<&str>,
 ) -> Result<Vec<CommandInfo>> {
-    catalogue(endpoint, "/api/command", directory, "command catalogue")
+    // A cold location publishes its registry in stages: first empty, then
+    // built-ins, then configured commands and skills. Wait for those plugins
+    // to finish before caching the list. The budget also bounds older builds
+    // whose plugin identifiers or readiness surface differ.
+    let path = format!("/api/command{}", location_query(directory));
+    let plugins_path = format!("/api/plugin{}", location_query(directory));
+    let deadline = Instant::now() + REQUEST_TIMEOUT;
+    let mut latest = Vec::new();
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(latest);
+        };
+        let ready = request(endpoint, "GET", &plugins_path, None, remaining)
+            .ok()
+            .as_ref()
+            .and_then(command_plugins_ready);
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(latest);
+        };
+        let response = request(endpoint, "GET", &path, None, remaining)?;
+        latest = decode(data(response, "command catalogue")?, "command catalogue")?;
+        if ready == Some(true) || (ready.is_none() && !latest.is_empty()) {
+            return Ok(latest);
+        }
+        std::thread::sleep(
+            Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
+fn command_plugins_ready(response: &Value) -> Option<bool> {
+    let plugins = response.get("data")?.as_array()?;
+    Some(
+        [
+            ["opencode.command", "command"],
+            ["opencode.config.command", "config-command"],
+            ["opencode.config.skill", "config-skill"],
+        ]
+        .iter()
+        .all(|names| {
+            plugins.iter().any(|plugin| {
+                plugin
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| names.contains(&id))
+                    && matches!(
+                        plugin.pointer("/state/status").and_then(Value::as_str),
+                        Some("active" | "failed")
+                    )
+            })
+        }),
+    )
 }
 
 pub(crate) fn list_skills(endpoint: &Endpoint, directory: Option<&str>) -> Result<Vec<SkillInfo>> {
@@ -1359,40 +1429,93 @@ mod tests {
     /// a real HTTP failure to [`ApiError`] is exercised through the shared wire
     /// layer rather than around it.
     fn serve_once(response: &'static str) -> Endpoint {
+        serve_responses(vec![response.to_owned()])
+    }
+
+    fn serve_responses(responses: Vec<String>) -> Endpoint {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            // TCP reads need not align with write!'s request fragments.
-            // Closing with unread request bytes can reset the connection and
-            // replace the canned HTTP error with a transport error on Windows.
-            {
-                let mut request = std::io::BufReader::new(&mut socket);
-                let mut line = String::new();
-                let mut content_length = 0;
-                loop {
-                    line.clear();
-                    assert!(
-                        request.read_line(&mut line).unwrap() > 0,
-                        "request ended before its headers were complete"
-                    );
-                    if line == "\r\n" {
-                        break;
-                    }
-                    if let Some((name, value)) = line.split_once(':') {
-                        if name.eq_ignore_ascii_case("content-length") {
-                            content_length = value.trim().parse::<usize>().unwrap();
+            for response in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                // TCP reads need not align with write!'s request fragments.
+                // Closing with unread request bytes can reset the connection and
+                // replace the canned HTTP error with a transport error on Windows.
+                {
+                    let mut request = std::io::BufReader::new(&mut socket);
+                    let mut line = String::new();
+                    let mut content_length = 0;
+                    loop {
+                        line.clear();
+                        assert!(
+                            request.read_line(&mut line).unwrap() > 0,
+                            "request ended before its headers were complete"
+                        );
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length = value.trim().parse::<usize>().unwrap();
+                            }
                         }
                     }
+                    request.read_exact(&mut vec![0; content_length]).unwrap();
                 }
-                request.read_exact(&mut vec![0; content_length]).unwrap();
+                socket.write_all(response.as_bytes()).unwrap();
             }
-            socket.write_all(response.as_bytes()).unwrap();
         });
         Endpoint::local(port)
+    }
+
+    #[test]
+    fn command_catalog_waits_for_cold_location_builtins() {
+        let responses = [
+            json!({"data": []}),
+            json!({"data": []}),
+            json!({"data": [{"id": "opencode.command", "state": {"status": "active"}}]}),
+            json!({"data": [{"name": "init"}, {"name": "review"}]}),
+            json!({"data": [
+                {"id": "opencode.command", "state": {"status": "active"}},
+                {"id": "opencode.config.command", "state": {"status": "active"}},
+                {"id": "opencode.config.skill", "state": {"status": "active"}}
+            ]}),
+            json!({"data": [{"name": "init"}, {"name": "review"}, {"name": "custom"}]}),
+        ]
+        .into_iter()
+        .map(|value| {
+            let body = value.to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        })
+        .collect();
+        let endpoint = serve_responses(responses);
+        let commands = list_commands(&endpoint, Some("/cold-workspace")).unwrap();
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            ["init", "review", "custom"]
+        );
+    }
+
+    #[test]
+    fn native_command_accepts_an_empty_acknowledgement() {
+        let endpoint = serve_once("HTTP/1.1 204 No Content\r\n\r\n");
+        command(
+            &endpoint,
+            "ses_test",
+            "review",
+            "main",
+            Some(Delivery::Steer),
+        )
+        .unwrap();
     }
 
     #[test]

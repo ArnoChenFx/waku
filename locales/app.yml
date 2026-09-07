@@ -1000,6 +1000,8 @@ command_scope.skill:
   en: skill
 command_scope.builtin:
   en: built-in
+command_scope.waku:
+  en: waku
 
 skills.search:
   en: Search skills…

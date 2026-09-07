@@ -59,8 +59,8 @@ use crate::model::{
     RuntimeMode, UserInputAnswer, UserInputOption, UserInputQuestion,
 };
 use crate::opencode2_api::{
-    self, AssistantContent, Delivery, ForkRequestBoundary, FormAnswer, FormField, FormInfo,
-    FormValue, MessageInfo, ModelRef, Order, PermissionReply, SessionOutcome, TokenUsage,
+    self, ApiError, AssistantContent, Delivery, ForkRequestBoundary, FormAnswer, FormField,
+    FormInfo, FormValue, MessageInfo, ModelRef, Order, PermissionReply, SessionOutcome, TokenUsage,
     ToolContent, ToolState,
 };
 use crate::opencode2_service::{self, HubFrame, Opencode2Service, Subscription};
@@ -351,6 +351,7 @@ struct Worker {
     /// The canonicalized workspace path, reused verbatim for `?directory=`:
     /// the server compares those by exact string equality.
     directory: String,
+    command_names: HashSet<String>,
     events: DriverEventSender,
     commands: Sender<DriverCommand>,
 }
@@ -509,8 +510,14 @@ impl OpenCode2Driver {
         if let Some(title) = generated_title(session.title.as_deref()) {
             let _ = events.send(DriverEvent::AutoTitleUpdated(Some(title)));
         }
+        let native_commands =
+            opencode2_api::list_commands(&endpoint, Some(&directory)).unwrap_or_default();
+        let command_names = native_commands
+            .iter()
+            .map(|command| command.name.clone())
+            .collect();
         let reported = reported_commands(
-            opencode2_api::list_commands(&endpoint, Some(&directory)).unwrap_or_default(),
+            native_commands,
             opencode2_api::list_skills(&endpoint, Some(&directory)).unwrap_or_default(),
         );
         if !reported.is_empty() {
@@ -522,6 +529,7 @@ impl OpenCode2Driver {
             service: Arc::clone(&service),
             session_id: session_id.clone(),
             directory,
+            command_names,
             events,
             commands: commands.clone(),
         };
@@ -793,14 +801,39 @@ fn auto_replies(mode: RuntimeMode, action: &str) -> bool {
     }
 }
 
+fn native_command_invocation<'a>(
+    text: &'a str,
+    commands: &HashSet<String>,
+) -> Option<(&'a str, &'a str)> {
+    let invocation = text.strip_prefix('/')?;
+    let (name, arguments) = invocation
+        .split_once(char::is_whitespace)
+        .unwrap_or((invocation, ""));
+    commands.contains(name).then(|| (name, arguments.trim()))
+}
+
+fn submit_prompt(
+    worker: &Worker,
+    endpoint: &Endpoint,
+    text: &str,
+    delivery: Option<Delivery>,
+) -> Result<Option<opencode2_api::InboxUser>, ApiError> {
+    if let Some((name, arguments)) = native_command_invocation(text, &worker.command_names) {
+        opencode2_api::command(endpoint, &worker.session_id, name, arguments, delivery)
+            .map(|_| None)
+    } else {
+        opencode2_api::prompt(endpoint, &worker.session_id, text, delivery).map(Some)
+    }
+}
+
 fn handle_command(worker: &Worker, message: DriverCommand, state: &mut StreamState) -> bool {
     let endpoint = worker.service.endpoint();
     let events = &worker.events;
     match message {
         DriverCommand::Prompt(text) => {
             state.begin_turn(events);
-            match opencode2_api::prompt(&endpoint, &worker.session_id, &text, None) {
-                Ok(inbox) => {
+            match submit_prompt(worker, &endpoint, &text, None) {
+                Ok(Some(inbox)) => {
                     // The EFFECTIVE delivery is read back rather than assumed:
                     // the server picks one when the caller sends none.
                     state.pending_input = Some(PendingInput {
@@ -809,6 +842,7 @@ fn handle_command(worker: &Worker, message: DriverCommand, state: &mut StreamSta
                         steer: inbox.delivery == Delivery::Steer,
                     });
                 }
+                Ok(None) => state.pending_input = None,
                 Err(error) => {
                     let _ = events.send(DriverEvent::Error(tr!(
                         "errors.provider_rejected_prompt_detail",
@@ -838,9 +872,8 @@ fn handle_command(worker: &Worker, message: DriverCommand, state: &mut StreamSta
                 });
                 return true;
             }
-            match opencode2_api::prompt(&endpoint, &worker.session_id, &text, Some(Delivery::Steer))
-            {
-                Ok(inbox) => {
+            match submit_prompt(worker, &endpoint, &text, Some(Delivery::Steer)) {
+                Ok(Some(inbox)) => {
                     // A server that queued the message anyway is promoted, so
                     // "steer" means the same thing on both paths.
                     if inbox.delivery != Delivery::Steer {
@@ -854,6 +887,9 @@ fn handle_command(worker: &Worker, message: DriverCommand, state: &mut StreamSta
                     });
                     // The inbox event is authoritative; this 2xx is only the
                     // fallback for a response Waku never sees.
+                    let _ = events.send(DriverEvent::SteerAccepted { message: text });
+                }
+                Ok(None) => {
                     let _ = events.send(DriverEvent::SteerAccepted { message: text });
                 }
                 Err(error) => {
@@ -2190,7 +2226,8 @@ mod tests {
     #[test]
     fn live_failure_frame_sequence_settles_the_turn() {
         let mut harness = Harness::new(RuntimeMode::FullAccess);
-        let error = json!({"type": "provider.auth", "message": "Insufficient balance.", "status": 401});
+        let error =
+            json!({"type": "provider.auth", "message": "Insufficient balance.", "status": 401});
         for event in [
             json!({"type": "session.inbox.enqueued", "data": {"sessionID": "ses_1"}}),
             json!({"type": "session.execution.started", "data": {"sessionID": "ses_1"}}),
@@ -2786,6 +2823,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["review", "deploy"]
         );
+    }
+
+    #[test]
+    fn native_command_dispatch_matches_only_registered_slash_names() {
+        let commands = ["init".into(), "review".into(), "team/review".into()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            native_command_invocation("/init", &commands),
+            Some(("init", ""))
+        );
+        assert_eq!(
+            native_command_invocation("/review main\ncheck tests", &commands),
+            Some(("review", "main\ncheck tests"))
+        );
+        assert_eq!(
+            native_command_invocation("/team/review main", &commands),
+            Some(("team/review", "main"))
+        );
+        assert!(native_command_invocation("/reviewer", &commands).is_none());
+        assert!(native_command_invocation("Discuss /review", &commands).is_none());
     }
 
     #[test]

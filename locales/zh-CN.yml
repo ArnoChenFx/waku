@@ -483,6 +483,7 @@ command_scope.project: 项目
 command_scope.user: 用户
 command_scope.skill: 技能
 command_scope.builtin: 内置
+command_scope.waku: waku
 skills.search: 搜索技能…
 skills.count_one: 1 个技能
 skills.count_many: "%{count} 个技能"

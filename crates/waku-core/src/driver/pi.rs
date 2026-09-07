@@ -23,7 +23,7 @@ use super::{activity, computer_use as computer_use_runtime};
 use crate::driver::{
     DriverControl, DriverEventSender, DriverEventSink, DriverStartOptions, SessionOptions,
 };
-use crate::model::{ActivityKind, DriverEvent, ProviderResumeCursor, RuntimeMode};
+use crate::model::{ActivityKind, DriverEvent, ProviderResumeCursor, ReportedCommand, RuntimeMode};
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -160,7 +160,12 @@ enum CommandMessage {
     Shutdown,
 }
 
-type PendingResponses = Arc<Mutex<HashMap<String, Sender<Result<Value, String>>>>>;
+enum PendingResponse {
+    Request(Sender<Result<Value, String>>),
+    Prompt,
+}
+
+type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
 
 pub struct PiDriver {
     flavor: PiFlavor,
@@ -474,6 +479,22 @@ impl PiDriver {
                         writer_events.send(DriverEvent::AutoTitleUpdated(Some(title.to_owned())));
                 }
 
+                // Pi reports extension commands, prompts and skills on request;
+                // Oh My Pi pushes its registry at startup and after reloads.
+                if flavor == PiFlavor::Pi
+                    && let Ok(catalog) = send_request(
+                        &mut stdin,
+                        &writer_pending,
+                        &mut next_request_id,
+                        json!({"type": "get_commands"}),
+                    )
+                {
+                    publish_commands(
+                        crate::slash_command_catalog::parse_pi_commands(&catalog),
+                        &writer_events,
+                    );
+                }
+
                 // Both flavors expose setters for these, so changing either is
                 // an RPC on the live session rather than a restart.
                 let mut current_model = model;
@@ -481,11 +502,11 @@ impl PiDriver {
                 while let Ok(message) = command_rx.recv() {
                     match message {
                         CommandMessage::Prompt(prompt) => {
-                            let result = send_request(
+                            let result = send_prompt(
                                 &mut stdin,
                                 &writer_pending,
                                 &mut next_request_id,
-                                json!({"type": "prompt", "message": prompt}),
+                                &prompt,
                             );
                             if let Err(error) = result {
                                 let _ = writer_events.send(DriverEvent::Error(tr!(
@@ -812,7 +833,9 @@ fn send_request(
     let id = format!("waku-{}", next_request_id);
     request["id"] = Value::String(id.clone());
     let (response_tx, response_rx) = bounded(1);
-    pending.lock().insert(id.clone(), response_tx);
+    pending
+        .lock()
+        .insert(id.clone(), PendingResponse::Request(response_tx));
     if let Err(error) = write_json_line(stdin, &request) {
         pending.lock().remove(&id);
         return Err(format!("transport write failed: {error}"));
@@ -829,6 +852,33 @@ fn send_request(
     }
 }
 
+fn send_prompt(
+    stdin: &mut impl Write,
+    pending: &PendingResponses,
+    next_request_id: &mut u64,
+    prompt: &str,
+) -> Result<(), String> {
+    *next_request_id += 1;
+    let id = format!("waku-{}", next_request_id);
+    {
+        let mut pending = pending.lock();
+        // A response from an older prompt cannot settle the next turn.
+        pending.retain(|_, response| matches!(response, PendingResponse::Request(_)));
+        pending.insert(id.clone(), PendingResponse::Prompt);
+    }
+    // OMP built-ins can hold the prompt response until compaction or another
+    // command finishes. Do not apply the short control-RPC timeout or block
+    // the writer from sending abort while waiting for that response.
+    if let Err(error) = write_json_line(
+        stdin,
+        &json!({"id": id, "type": "prompt", "message": prompt}),
+    ) {
+        pending.lock().remove(&id);
+        return Err(format!("transport write failed: {error}"));
+    }
+    Ok(())
+}
+
 fn write_json_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
@@ -837,7 +887,9 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()
 
 fn fail_pending(pending: &PendingResponses, message: &str) {
     for (_, response) in pending.lock().drain() {
-        let _ = response.send(Err(message.to_owned()));
+        if let PendingResponse::Request(response) = response {
+            let _ = response.send(Err(message.to_owned()));
+        }
     }
 }
 
@@ -1203,7 +1255,39 @@ fn handle_pi_message(
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return;
         };
-        let Some(response) = pending.lock().remove(id) else {
+        let prompt_response = matches!(pending.lock().get(id), Some(PendingResponse::Prompt));
+        if prompt_response {
+            let success = value.get("success").and_then(Value::as_bool) == Some(true);
+            let local_only =
+                value.pointer("/data/agentInvoked").and_then(Value::as_bool) == Some(false);
+            if success && !local_only {
+                // OMP may acknowledge a prompt before reporting that an
+                // extension handled it locally. Retain the id for that second
+                // response; normal agent completion retires it below.
+                return;
+            }
+            pending.lock().remove(id);
+            if !state.run_started {
+                let _ = events.send(DriverEvent::TurnStarted);
+            }
+            let error = (!success).then(|| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{} RPC command failed", flavor.display_name()))
+            });
+            if let Some(error) = error.as_ref() {
+                let _ = events.send(DriverEvent::Error(error.clone()));
+            }
+            let _ = events.send(DriverEvent::TurnFinished {
+                success,
+                summary: error,
+            });
+            *state = PiStreamState::default();
+            return;
+        }
+        let Some(PendingResponse::Request(response)) = pending.lock().remove(id) else {
             return;
         };
         if value.get("success").and_then(Value::as_bool) == Some(true) {
@@ -1216,6 +1300,14 @@ fn handle_pi_message(
                 .unwrap_or_else(|| format!("{} RPC command failed", flavor.display_name()));
             let _ = response.send(Err(error));
         }
+        return;
+    }
+
+    if event_type == "available_commands_update" {
+        publish_commands(
+            crate::slash_command_catalog::parse_oh_my_pi_commands(&value),
+            events,
+        );
         return;
     }
 
@@ -1238,6 +1330,9 @@ fn handle_pi_message(
             return;
         }
         if state.run_started {
+            pending
+                .lock()
+                .retain(|_, response| matches!(response, PendingResponse::Request(_)));
             let success = !state.failed;
             let _ = events.send(DriverEvent::TurnFinished {
                 success,
@@ -1254,6 +1349,21 @@ fn handle_pi_message(
     }
 
     match event_type {
+        "command_output" => {
+            if let Some(text) = value
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                if !state.run_started {
+                    state.run_started = true;
+                    let _ = events.send(DriverEvent::TurnStarted);
+                }
+                // Each command_output is a complete output block, unlike
+                // assistant deltas. Keep successive reports separated.
+                let _ = events.send(DriverEvent::TextDelta(format!("{text}\n\n")));
+            }
+        }
         "agent_start" | "turn_start" => {
             if !state.run_started {
                 state.run_started = true;
@@ -1391,6 +1501,20 @@ fn handle_pi_message(
     }
 }
 
+fn publish_commands(
+    commands: Vec<waku_protocol::composer::SlashCommand>,
+    events: &impl DriverEventSink,
+) {
+    let commands = commands
+        .into_iter()
+        .map(|command| ReportedCommand {
+            name: command.name,
+            description: command.description,
+        })
+        .collect();
+    let _ = events.send(DriverEvent::AvailableCommands(commands));
+}
+
 fn emit_completed_message_fallback(
     message: Option<&Value>,
     events: &impl DriverEventSink,
@@ -1466,6 +1590,115 @@ mod tests {
     use super::*;
     use crossbeam_channel::TryRecvError;
 
+    #[test]
+    fn live_command_updates_reach_the_composer_and_clear_removed_commands() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        for entries in [
+            json!([
+                {"name": "compact", "source": "builtin", "description": "Compact context"},
+                {"name": "skill:verify", "source": "skill", "description": "Verify changes"}
+            ]),
+            json!([]),
+        ] {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                json!({"type": "available_commands_update", "commands": entries}),
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+        let DriverEvent::AvailableCommands(reported) = event_rx.recv().unwrap() else {
+            panic!("missing command update")
+        };
+        assert_eq!(
+            reported
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            ["compact", "verify"]
+        );
+        assert_eq!(reported[0].description, "Compact context");
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::AvailableCommands(commands) if commands.is_empty())
+        );
+        assert!(!state.run_started);
+    }
+
+    #[test]
+    fn local_slash_command_output_and_completion_do_not_need_an_agent_turn() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        send_prompt(&mut Vec::new(), &pending, &mut 0, "/context").unwrap();
+        for frame in [
+            json!({"type": "response", "id": "waku-1", "command": "prompt", "success": true}),
+            json!({"type": "command_output", "text": "Available commands\n"}),
+            json!({"type": "command_output", "text": "/compact"}),
+            json!({"type": "response", "id": "waku-1", "command": "prompt", "success": true, "data": {"agentInvoked": false}}),
+            json!({"type": "agent_end", "isTerminal": true}),
+        ] {
+            handle_pi_message(
+                PiFlavor::OhMyPi,
+                frame,
+                &pending,
+                &commands,
+                &events,
+                &mut state,
+            );
+        }
+        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "Available commands\n\n\n")
+        );
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::TextDelta(text) if text == "/compact\n\n")
+        );
+        assert!(matches!(
+            event_rx.recv().unwrap(),
+            DriverEvent::TurnFinished { success: true, .. }
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert!(pending.lock().is_empty());
+    }
+
+    #[test]
+    fn asynchronous_prompt_errors_settle_only_the_current_prompt() {
+        let (pending, commands, _command_rx, mut state) = harness();
+        let (events, event_rx) = unbounded();
+        let mut next = 0;
+        let mut wire = Vec::new();
+        send_prompt(&mut wire, &pending, &mut next, "/old").unwrap();
+        send_prompt(&mut wire, &pending, &mut next, "/new").unwrap();
+        handle_pi_message(
+            PiFlavor::Pi,
+            json!({"type": "response", "id": "waku-1", "success": false, "error": "stale"}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(event_rx.try_recv().is_err());
+        handle_pi_message(
+            PiFlavor::Pi,
+            json!({"type": "response", "id": "waku-2", "success": false, "error": "command failed"}),
+            &pending,
+            &commands,
+            &events,
+            &mut state,
+        );
+        assert!(matches!(event_rx.recv().unwrap(), DriverEvent::TurnStarted));
+        assert!(
+            matches!(event_rx.recv().unwrap(), DriverEvent::Error(error) if error == "command failed")
+        );
+        assert!(matches!(
+            event_rx.recv().unwrap(),
+            DriverEvent::TurnFinished { success: false, .. }
+        ));
+        assert!(pending.lock().is_empty());
+        assert_eq!(String::from_utf8(wire).unwrap().lines().count(), 2);
+    }
     fn harness() -> (
         PendingResponses,
         Sender<CommandMessage>,

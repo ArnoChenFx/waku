@@ -510,6 +510,7 @@ command_scope.project: プロジェクト
 command_scope.user: ユーザー
 command_scope.skill: スキル
 command_scope.builtin: 組み込み
+command_scope.waku: waku
 
 skills.search: スキルを検索…
 skills.count_one: 1 個のスキル
