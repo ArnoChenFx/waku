@@ -1347,8 +1347,8 @@ struct TaggedError {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read as _, Write as _};
-    use std::net::TcpListener;
+    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
 
     use serde_json::json;
@@ -1362,13 +1362,70 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         thread::spawn(move || {
-            if let Ok((mut socket, _)) = listener.accept() {
-                let mut buffer = [0_u8; 4096];
-                let _ = socket.read(&mut buffer);
-                let _ = socket.write_all(response.as_bytes());
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // TCP reads need not align with write!'s request fragments.
+            // Closing with unread request bytes can reset the connection and
+            // replace the canned HTTP error with a transport error on Windows.
+            {
+                let mut request = std::io::BufReader::new(&mut socket);
+                let mut line = String::new();
+                let mut content_length = 0;
+                loop {
+                    line.clear();
+                    assert!(
+                        request.read_line(&mut line).unwrap() > 0,
+                        "request ended before its headers were complete"
+                    );
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                }
+                request.read_exact(&mut vec![0; content_length]).unwrap();
             }
+            socket.write_all(response.as_bytes()).unwrap();
         });
         Endpoint::local(port)
+    }
+
+    #[test]
+    fn canned_server_waits_for_complete_request_headers_and_body() {
+        let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+        let endpoint = serve_once(response);
+        let mut socket = TcpStream::connect(endpoint.address()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+
+        // Send the request in pieces, as TCP may deliver write!'s fragments.
+        for fragment in [
+            "POST /api/session HTTP/1.1\r\n",
+            "Host: localhost\r\nContent-Length: 4\r\n\r\nab",
+        ] {
+            socket.write_all(fragment.as_bytes()).unwrap();
+            let error = socket
+                .read(&mut [0_u8; 1])
+                .expect_err("the fixture replied before the complete request arrived");
+            assert!(matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ));
+        }
+
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket.write_all(b"cd").unwrap();
+        let mut received = String::new();
+        socket.read_to_string(&mut received).unwrap();
+        assert_eq!(received, response);
     }
 
     #[test]
@@ -1654,7 +1711,7 @@ mod tests {
         let endpoint =
             serve_once("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
         let error = list_models(&endpoint, Some("/nope/nope")).unwrap_err();
-        assert!(error.is_unresolvable_location());
+        assert!(error.is_unresolvable_location(), "{error:?}");
         assert_eq!(error.status(), Some(500));
     }
 

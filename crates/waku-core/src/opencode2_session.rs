@@ -507,6 +507,8 @@ mod tests {
 
     #[test]
     fn summaries_keep_the_stored_directory_and_convert_millis_to_seconds() {
+        let project_dir = std::env::temp_dir().join("waku-opencode2-project");
+        let untitled_dir = std::env::temp_dir().join("waku-opencode2-untitled");
         let listed = sessions(json!([
             {
                 "id": "ses_waku",
@@ -515,7 +517,7 @@ mod tests {
                 "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
                 "time": {"created": 1_788_689_510_000_u64, "updated": 1_788_689_514_982_u64},
                 "title": "Review and merge Waku PR #113",
-                "location": {"directory": "/Users/egoist/dev/waku"}
+                "location": {"directory": project_dir}
             },
             {
                 "id": " ses_untitled ",
@@ -523,7 +525,7 @@ mod tests {
                 "cost": 0,
                 "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
                 "time": {"created": 1_786_109_016_231_u64, "updated": 0},
-                "location": {"directory": "/tmp"}
+                "location": {"directory": untitled_dir}
             },
             {
                 "id": "ses_relative",
@@ -545,9 +547,11 @@ mod tests {
             summaries[0].cursor,
             ProviderResumeCursor::OpenCode2 {
                 session_id: "ses_waku".into(),
-                directory: Some("/Users/egoist/dev/waku".into()),
+                directory: Some(project_dir.to_string_lossy().into_owned()),
             }
         );
+        assert_eq!(summaries[0].cwd, project_dir);
+        assert_eq!(summaries[1].cwd, untitled_dir);
         assert_eq!(summaries[0].created_at, 1_788_689_510);
         assert_eq!(summaries[0].updated_at, 1_788_689_514);
         // A session the service never updated must not sort before its own
