@@ -142,7 +142,7 @@ fn discover_opencode(binary: &Path, project_root: &Path) -> Option<Vec<SlashComm
     // appear in `debug config`. Reading it needs a workspace server, but does
     // not create a session or run a turn. Reuse the resident server when one
     // already exists instead of starting a competing plugin/MCP stack.
-    if let Ok(server) = crate::opencode_pool::acquire(binary, project_root)
+    if let Ok(server) = crate::opencode_pool::acquire(binary, project_root, &[])
         && let Ok(value) = server.request_with_timeout("GET", "/command", None, CLI_PROBE_TIMEOUT)
         && value.is_array()
     {
@@ -804,7 +804,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("waku-command-catalog-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let server = crate::opencode_pool::acquire(&binary, &root).unwrap();
+        let server = crate::opencode_pool::acquire(&binary, &root, &[]).unwrap();
         let before = server.request("GET", "/session", None).unwrap();
         let commands = discover(ProviderKind::OpenCode, &binary, &root).unwrap();
         for name in ["init", "review"] {

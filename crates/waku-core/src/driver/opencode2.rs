@@ -393,6 +393,7 @@ impl OpenCode2Driver {
             agent_preset,
             computer_use_enabled: _,
             provider_cursor,
+            extra_args: _,
         } = options;
 
         let resumed = match provider_cursor {
