@@ -45,6 +45,8 @@ fn trim_resident_transcripts(state: &mut PersistedState, pinned: &HashSet<Uuid>)
 pub struct WakuBackend {
     sessions: Mutex<HashMap<Uuid, (Uuid, DriverHandle)>>,
     terminals: Mutex<HashMap<Uuid, (Uuid, crate::terminal::DaemonTerminal)>>,
+    #[cfg(all(test, unix))]
+    terminal_shell: Option<alacritty_terminal::tty::Shell>,
     settings: DaemonSettingsStore,
     task_store: StateStore,
     task_state: Mutex<PersistedState>,
@@ -79,6 +81,8 @@ impl WakuBackend {
         Ok(Self {
             sessions: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
+            #[cfg(all(test, unix))]
+            terminal_shell: None,
             settings,
             task_store,
             task_state: Mutex::new(task_state),
@@ -90,6 +94,33 @@ impl WakuBackend {
             usage_rates_dir,
             default_cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         })
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_terminal_shell(mut self, shell: alacritty_terminal::tty::Shell) -> Self {
+        self.terminal_shell = Some(shell);
+        self
+    }
+
+    fn open_terminal(
+        &self,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+        events: EventSink,
+    ) -> anyhow::Result<crate::terminal::DaemonTerminal> {
+        #[cfg(all(test, unix))]
+        if let Some(shell) = &self.terminal_shell {
+            return crate::terminal::DaemonTerminal::open_with_shell(
+                cwd,
+                cols,
+                rows,
+                events,
+                shell.clone(),
+            );
+        }
+        ensure_shell_environment();
+        crate::terminal::DaemonTerminal::open(cwd, cols, rows, events)
     }
 
     /// Capture and persist one ending checkpoint exactly once per daemon.
@@ -498,6 +529,9 @@ impl Backend for WakuBackend {
                     ProviderKind::OpenCode => {
                         crate::opencode_session::list_provider_sessions(&binary, limit)?
                     }
+                    ProviderKind::OpenCode2 => {
+                        crate::opencode2_session::list_provider_sessions(&binary, limit)?
+                    }
                     ProviderKind::DeepSeek => {
                         crate::deepseek_session::list_provider_sessions(
                             &binary,
@@ -557,6 +591,16 @@ impl Backend for WakuBackend {
                         crate::codex_session::provider_session_history(
                             &binary,
                             thread_id,
+                            VISIBLE_TURN_LIMIT,
+                        )?
+                    }
+                    // OpenCode 2 is not an ACP provider: its history comes
+                    // from the adopted v2 service's own export route.
+                    ProviderResumeCursor::OpenCode2 { session_id, .. } => {
+                        let binary = self.provider_binary(ProviderKind::OpenCode2)?;
+                        crate::opencode2_session::provider_session_history(
+                            &binary,
+                            session_id,
                             VISIBLE_TURN_LIMIT,
                         )?
                     }
@@ -692,8 +736,7 @@ impl Backend for WakuBackend {
                 result: crate::workspace::execute(operation)?,
             }),
             Command::OpenTerminal { cwd, cols, rows } => {
-                ensure_shell_environment();
-                let terminal = crate::terminal::DaemonTerminal::open(&cwd, cols, rows, events)?;
+                let terminal = self.open_terminal(&cwd, cols, rows, events)?;
                 let previous = self
                     .terminals
                     .lock()
@@ -1235,6 +1278,21 @@ impl WakuBackend {
                 })?;
                 Ok((fork.cursor, HashMap::new()))
             }
+            ProviderKind::OpenCode2 => {
+                let Some(ProviderResumeCursor::OpenCode2 { session_id, .. }) =
+                    source.provider_cursor.as_ref()
+                else {
+                    bail!("OpenCode 2's native session is unavailable");
+                };
+                // No cwd: a v2 session carries its own `location`, so there is
+                // no server working directory to fork against.
+                let fork = fork_provider_session(ProviderSessionForkRequest::OpenCode2 {
+                    binary: self.provider_binary(ProviderKind::OpenCode2)?,
+                    session_id: session_id.clone(),
+                    turn_count: provider_turn_count,
+                })?;
+                Ok((fork.cursor, HashMap::new()))
+            }
             ProviderKind::Grok => {
                 let Some(ProviderResumeCursor::Grok { session_id }) =
                     source.provider_cursor.as_ref()
@@ -1399,6 +1457,31 @@ impl WakuBackend {
                         session_id: session_id.clone(),
                         turn_count: provider_turn_count,
                         extra_args: self.provider_extra_args(ProviderKind::OpenCode),
+                    })?
+                    .cursor
+                };
+                Ok((Some(cursor), HashMap::new(), false))
+            }
+            ProviderKind::OpenCode2 => {
+                let cursor = if let Some(driver) = self
+                    .sessions
+                    .lock()
+                    .get(&source.id)
+                    .map(|(_, driver)| driver.clone())
+                {
+                    driver
+                        .rollback(rollback_turns)?
+                        .ok_or_else(|| anyhow!("OpenCode 2 returned no rewound-session cursor"))?
+                } else {
+                    let Some(ProviderResumeCursor::OpenCode2 { session_id, .. }) =
+                        source.provider_cursor.as_ref()
+                    else {
+                        bail!("OpenCode 2's native session is unavailable");
+                    };
+                    fork_provider_session(ProviderSessionForkRequest::OpenCode2 {
+                        binary: binary.to_owned(),
+                        session_id: session_id.clone(),
+                        turn_count: provider_turn_count,
                     })?
                     .cursor
                 };
@@ -1683,6 +1766,15 @@ fn fork_provider_session(
                 turn_count,
                 &extra_args,
             )?,
+            HashMap::new(),
+            None,
+        ),
+        ProviderSessionForkRequest::OpenCode2 {
+            binary,
+            session_id,
+            turn_count,
+        } => (
+            crate::opencode2_session::fork_session_at_turn(&binary, &session_id, turn_count)?,
             HashMap::new(),
             None,
         ),

@@ -24,6 +24,7 @@ const PROVIDERS: ProviderKind[] = [
   'cursor',
   'amp',
   'openCode',
+  'openCode2',
   'grok',
   'kimi',
   'deepSeek',

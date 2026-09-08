@@ -16,6 +16,12 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unreleased]
 
+## [0.1.18]
+
+- Fix Codex session forking
+- Add OpenCode 2 support, add reasoning effort option for both OpenCode and OpenCode 2
+- Fix memory usage for long-running sessions
+
 ## [0.1.17]
 
 - Fix the OpenCode Resume list showing only sessions started outside a git checkout; it now lists sessions from every project

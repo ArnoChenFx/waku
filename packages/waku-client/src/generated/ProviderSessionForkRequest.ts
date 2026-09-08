@@ -8,4 +8,4 @@ export type ProviderSessionForkRequest = { "provider": "claude", session_id: str
 /**
  * 自定义启动参数，保证冷 fork 与常驻服务器使用同一套池键。
  */
-extra_args: Array<string>, } | { "provider": "grok", binary: string, cwd: string, session_id: string, turn_count: number, };
+extra_args: Array<string>, } | { "provider": "openCode2", binary: string, session_id: string, turn_count: number, } | { "provider": "grok", binary: string, cwd: string, session_id: string, turn_count: number, };

@@ -1201,6 +1201,14 @@ mod tests {
         let observer = DaemonClient::connect(&address.to_string(), "secret".into()).unwrap();
         let source_revisions = source.subscribe_task_state();
         let observer_revisions = observer.subscribe_task_state();
+        // The handshake can finish before the server registers its subscriber.
+        // Complete the observer's initial load before another client publishes.
+        assert!(matches!(
+            observer
+                .request(Uuid::nil(), Uuid::nil(), Command::LoadTaskState)
+                .unwrap(),
+            ResponsePayload::TaskState { .. }
+        ));
         let session = AgentSession::new(Uuid::new_v4(), ProviderKind::Codex);
         let session_id = session.id;
 
@@ -1634,11 +1642,12 @@ mod tests {
         let root = std::env::temp_dir().join(format!("waku-terminal-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let hub = Arc::new(Hub::default());
-        let terminal = crate::terminal::DaemonTerminal::open(
+        let terminal = crate::terminal::DaemonTerminal::open_with_shell(
             &root,
             80,
             24,
             hub.event_sink(Uuid::new_v4(), Uuid::new_v4()),
+            terminal_test_shell("while IFS= read -r line; do :; done"),
         )
         .unwrap();
         let (dropped, finished) = bounded(1);
@@ -1657,13 +1666,35 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn websocket_terminal_round_trip_streams_input_and_output() {
+        websocket_terminal_round_trip(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn websocket_terminal_close_does_not_wait_for_a_shell_ignoring_hangup() {
+        websocket_terminal_round_trip(true);
+    }
+
+    #[cfg(unix)]
+    fn terminal_test_shell(script: &str) -> alacritty_terminal::tty::Shell {
+        // Do not load the developer's or CI runner's login files, prompt
+        // plugins, or terminal capability queries in a transport test.
+        alacritty_terminal::tty::Shell::new("/bin/sh".into(), vec!["-c".into(), script.into()])
+    }
+
+    #[cfg(unix)]
+    fn websocket_terminal_round_trip(ignore_hangup: bool) {
         let root = std::env::temp_dir().join(format!("waku-terminal-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let backend = WakuBackend::new(
             DaemonSettingsStore::open(root.join("settings.json")).unwrap(),
             StateStore::daemon(root.join("app.db")),
         )
-        .unwrap();
+        .unwrap()
+        .with_terminal_shell(terminal_test_shell(&format!(
+            "{}\nprintf 'ready:%s\\n' \"$$\"\nwhile IFS= read -r line; do printf 'received:%s\\n' \"$line\"; done",
+            if ignore_hangup { "trap '' HUP" } else { ":" },
+        )));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -1699,6 +1730,15 @@ mod tests {
                 .unwrap(),
             ResponsePayload::Ack
         ));
+        // Wait until the shell has installed its signal handler. Receiving
+        // local echo alone does not prove that shell startup has completed.
+        let ready = terminal_output_until(&events, b"\n");
+        let child_pid: libc::pid_t = String::from_utf8_lossy(&ready)
+            .trim()
+            .strip_prefix("ready:")
+            .unwrap()
+            .parse()
+            .unwrap();
         client
             .request(
                 terminal_id,
@@ -1709,10 +1749,39 @@ mod tests {
             )
             .unwrap();
 
-        // The raw test client intentionally does not emulate wterm's replies
-        // to terminal capability queries. The PTY's local echo is enough to
-        // prove that daemon-side input and output both crossed the WebSocket.
-        let marker = b"waku-terminal-round-trip";
+        // The response prefix is absent from the input, so a PTY echo cannot
+        // satisfy this assertion before the child has actually read it.
+        terminal_output_until(&events, b"received:waku-terminal-round-trip");
+
+        let (closed, finished) = bounded(1);
+        let closing_client = client.clone();
+        let close = std::thread::spawn(move || {
+            let _ = closed.send(closing_client.request(
+                terminal_id,
+                terminal_id,
+                Command::CloseTerminal,
+            ));
+        });
+        let result = finished.recv_timeout(Duration::from_secs(3));
+        if result.is_err() {
+            // Clean up the fixture even when shutdown regresses, and fail
+            // here instead of waiting for the client's 120-second timeout.
+            unsafe {
+                libc::kill(child_pid, libc::SIGKILL);
+            }
+        }
+        client.shutdown();
+        server.join().unwrap();
+        close.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            matches!(result, Ok(Ok(ResponsePayload::Ack))),
+            "closing daemon terminal did not complete: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn terminal_output_until(events: &Receiver<SequencedEvent>, marker: &[u8]) -> Vec<u8> {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         let mut output = Vec::new();
         let mut seen_events = Vec::new();
@@ -1739,16 +1808,7 @@ mod tests {
             "daemon terminal did not return the shell marker; events={seen_events:?}, output={}",
             String::from_utf8_lossy(&output)
         );
-        assert!(matches!(
-            client
-                .request(terminal_id, terminal_id, Command::CloseTerminal)
-                .unwrap(),
-            ResponsePayload::Ack
-        ));
-
-        client.shutdown();
-        server.join().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+        output
     }
 
     #[test]

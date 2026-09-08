@@ -47,13 +47,16 @@ describe('composer autocomplete', () => {
     const discovered = [
       command('review', 'Project', 'Review changes', 'Review $ARGUMENTS'),
       command('deploy', 'Skill', 'Deploy the app', null),
+      command('resume', 'Waku', 'Resume a session', null),
     ]
     const reported: ReportedCommand[] = [
       { name: 'review', description: 'Provider review' },
       { name: 'compact', description: 'Compact context' },
+      { name: 'resume', description: 'Provider resume' },
     ]
     expect(mergeComposerCommands(discovered, reported)).toEqual([
       command('compact', 'Builtin', 'Compact context', null),
+      discovered[2],
       discovered[0],
       discovered[1],
     ])

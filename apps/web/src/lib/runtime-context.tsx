@@ -1454,6 +1454,7 @@ function providerName(provider: AgentSession['provider']) {
       deepSeek: 'DeepSeek Harness',
       fx: 'Fx',
       openCode: 'OpenCode',
+      openCode2: 'OpenCode 2',
       grok: 'Grok',
       kimi: 'Kimi',
       ohMyPi: 'Oh My Pi',

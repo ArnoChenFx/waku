@@ -513,11 +513,7 @@ impl Waku {
                     .flex()
                     .items_center()
                     .gap(px(7.0))
-                    .child(icon(
-                        provider_icon(provider),
-                        14.0,
-                        provider_color(&theme, provider),
-                    ))
+                    .child(provider_mark(&theme, provider, 14.0, provider_color(&theme, provider)))
                     .child(
                         div()
                             .flex_1()
@@ -638,15 +634,11 @@ impl Waku {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(icon(
-                        provider_icon(provider),
-                        16.0,
-                        if highlighted {
+                    .child(provider_mark(&theme, provider, 16.0, if highlighted {
                             provider_color(&theme, provider)
                         } else {
                             theme.text_secondary
-                        },
-                    ))
+                        }))
                     .child(
                         div()
                             .min_w_0()

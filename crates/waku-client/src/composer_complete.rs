@@ -383,6 +383,7 @@ mod tests {
             command("format", CommandScope::User),
             command("lint", CommandScope::Project),
             command("review", CommandScope::Builtin),
+            command("resume", CommandScope::Waku),
         ];
         let reported = vec![ReportedCommand {
             name: "compact".into(),
@@ -397,6 +398,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (CommandScope::Builtin, "compact"),
+                (CommandScope::Waku, "resume"),
                 (CommandScope::Builtin, "review"),
                 (CommandScope::Project, "lint"),
                 (CommandScope::User, "format"),

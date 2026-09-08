@@ -226,5 +226,15 @@ export function expandedComposerSubmission(
 }
 
 function commandScopeRank(scope: SlashCommand['scope']): number {
-  return ['Builtin', 'Project', 'User', 'Skill'].indexOf(scope)
+  switch (scope) {
+    case 'Builtin':
+    case 'Waku':
+      return 0
+    case 'Project':
+      return 1
+    case 'User':
+      return 2
+    case 'Skill':
+      return 3
+  }
 }

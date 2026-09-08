@@ -476,6 +476,38 @@ fn perform_provider_rewind(
             };
             Ok((Some(cursor), None, None))
         }
+        ProviderKind::OpenCode2 => {
+            let cursor = if let Some(driver) = request.driver.as_ref() {
+                driver.rollback(request.rollback_turns)?.ok_or_else(|| {
+                    anyhow::anyhow!("OpenCode 2 returned no cursor for the rewound session")
+                })?
+            } else {
+                let Some(ProviderResumeCursor::OpenCode2 {
+                    session_id: native_session_id,
+                    ..
+                }) = request.provider_cursor.as_ref()
+                else {
+                    anyhow::bail!(tr!(
+                        "errors.provider_native_cursor_unavailable",
+                        provider = "OpenCode 2"
+                    ));
+                };
+                let binary = request.binary.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(tr!("errors.provider_not_found", provider = "OpenCode 2"))
+                })?;
+                request
+                    .workspace_client
+                    .fork_provider_session(
+                        waku_client::provider_session::ProviderSessionForkRequest::OpenCode2 {
+                            binary: binary.to_owned(),
+                            session_id: native_session_id.clone(),
+                            turn_count: request.provider_turn_count,
+                        },
+                    )?
+                    .cursor
+            };
+            Ok((Some(cursor), None, None))
+        }
         ProviderKind::Amp => {
             let Some(ProviderResumeCursor::Amp {
                 thread_id: native_thread_id,
@@ -574,10 +606,12 @@ fn perform_provider_rewind(
         }
         // Unreachable through the UI, which hides rewinding for providers that
         // answer `supports_conversation_rollback` with false.
-        ProviderKind::Fx | ProviderKind::Kimi => Err(anyhow::anyhow!(tr!(
-            "errors.provider_turn_branching_unsupported",
-            provider = provider.display_name()
-        ))),
+        ProviderKind::Fx | ProviderKind::Kimi | ProviderKind::OpenCode2 => {
+            Err(anyhow::anyhow!(tr!(
+                "errors.provider_turn_branching_unsupported",
+                provider = provider.display_name()
+            )))
+        }
     }
 }
 
@@ -796,6 +830,35 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                                 session_id: native_session_id.clone(),
                                 turn_count: request.provider_turn_count,
                                 extra_args: request.provider_extra_args.clone(),
+                            },
+                        )?
+                        .cursor,
+                    None,
+                    None,
+                ))
+            }
+            ProviderKind::OpenCode2 => {
+                let Some(ProviderResumeCursor::OpenCode2 {
+                    session_id: native_session_id,
+                    ..
+                }) = request.source.provider_cursor.as_ref()
+                else {
+                    anyhow::bail!(tr!(
+                        "errors.provider_native_session_unavailable",
+                        provider = "OpenCode 2"
+                    ));
+                };
+                let binary = request.binary.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(tr!("errors.provider_not_installed", provider = "OpenCode 2"))
+                })?;
+                Ok((
+                    request
+                        .workspace_client
+                        .fork_provider_session(
+                            waku_client::provider_session::ProviderSessionForkRequest::OpenCode2 {
+                                binary: binary.to_owned(),
+                                session_id: native_session_id.clone(),
+                                turn_count: request.provider_turn_count,
                             },
                         )?
                         .cursor,
@@ -1870,6 +1933,7 @@ impl Waku {
         let binary_provider = match provider {
             ProviderKind::Amp => Some("Amp"),
             ProviderKind::OpenCode => Some("OpenCode"),
+            ProviderKind::OpenCode2 => Some("OpenCode 2"),
             ProviderKind::Grok => Some("Grok Build"),
             _ => None,
         };
@@ -2251,6 +2315,7 @@ impl Waku {
         let needs_binary = rollback_turns > 0
             && (matches!(source.provider, ProviderKind::Amp)
                 || (source.provider == ProviderKind::OpenCode && driver.is_none())
+                || (source.provider == ProviderKind::OpenCode2 && driver.is_none())
                 || (source.provider == ProviderKind::Grok && retained_turn_count > 0));
         let binary = needs_binary
             .then(|| {
@@ -2503,6 +2568,7 @@ impl Waku {
                     | ProviderKind::Cursor
                     | ProviderKind::DeepSeek
                     | ProviderKind::OpenCode
+                    | ProviderKind::OpenCode2
                     | ProviderKind::Grok
             ) && provider_rewind_cursor.is_some())
         {

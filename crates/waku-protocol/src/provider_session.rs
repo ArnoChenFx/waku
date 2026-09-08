@@ -35,6 +35,14 @@ pub enum ProviderSessionForkRequest {
         /// 自定义启动参数，保证冷 fork 与常驻服务器使用同一套池键。
         extra_args: Vec<String>,
     },
+    /// v2 sessions carry their own `location`, so there is no server working
+    /// directory to fork against; `binary` only lets the cold path reach the
+    /// adopted background service.
+    OpenCode2 {
+        binary: PathBuf,
+        session_id: String,
+        turn_count: usize,
+    },
     Grok {
         binary: PathBuf,
         cwd: PathBuf,

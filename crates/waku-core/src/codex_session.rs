@@ -1,4 +1,4 @@
-//! Codex CLI session discovery and transcript import.
+//! Codex CLI session discovery, transcript import, and detached forks.
 //!
 //! The app-server owns Codex's state database and rollout migration rules, so
 //! use its public thread APIs instead of reimplementing `codex resume` by
@@ -31,6 +31,10 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> std::io::Result<()
 
 fn app_server_request(binary: &Path, request: Value) -> anyhow::Result<Value> {
     let cwd = crate::acp_session::catalog_working_directory()?;
+    app_server_request_in(binary, &cwd, request)
+}
+
+fn app_server_request_in(binary: &Path, cwd: &Path, request: Value) -> anyhow::Result<Value> {
     let mut command = crate::command_env::command(binary);
     let command = command
         .args(["app-server", "--stdio"])
@@ -59,32 +63,8 @@ fn app_server_request(binary: &Path, request: Value) -> anyhow::Result<Value> {
         }
     });
 
-    let initialized = write_json_line(
-        &mut stdin,
-        &json!({
-            "method": "initialize",
-            "id": 0,
-            "params": {
-                "clientInfo": {
-                    "name": "waku",
-                    "title": "Waku",
-                    "version": env!("CARGO_PKG_VERSION")
-                },
-                "capabilities": { "experimentalApi": true }
-            }
-        }),
-    )
-    .and_then(|_| write_json_line(&mut stdin, &json!({"method": "initialized", "params": {}})))
-    .and_then(|_| write_json_line(&mut stdin, &request));
-    if let Err(error) = initialized {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = reader.join();
-        return Err(error).context("could not write to Codex app-server");
-    }
-
     let deadline = Instant::now() + RPC_TIMEOUT;
-    let response = (|| -> anyhow::Result<Value> {
+    let receive_response = |id| -> anyhow::Result<Value> {
         loop {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
@@ -92,21 +72,101 @@ fn app_server_request(binary: &Path, request: Value) -> anyhow::Result<Value> {
             let value = rx
                 .recv_timeout(remaining)
                 .map_err(|_| anyhow!("Codex app-server session request timed out"))?;
-            if value.get("id").and_then(Value::as_u64) == Some(1) {
+            if value.get("method").is_none() && value.get("id").and_then(Value::as_u64) == Some(id)
+            {
+                if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+                    bail!("Codex rejected the session request: {error}");
+                }
                 return Ok(value);
             }
         }
+    };
+    let response = (|| -> anyhow::Result<Value> {
+        write_json_line(
+            &mut stdin,
+            &json!({
+                "method": "initialize",
+                "id": 0,
+                "params": {
+                    "clientInfo": {
+                        "name": "waku",
+                        "title": "Waku",
+                        "version": env!("CARGO_PKG_VERSION")
+                    },
+                    "capabilities": { "experimentalApi": true }
+                }
+            }),
+        )?;
+        receive_response(0)?;
+        write_json_line(&mut stdin, &json!({"method": "initialized", "params": {}}))?;
+        write_json_line(&mut stdin, &request)?;
+        receive_response(1)
     })();
-    drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = reader.join();
-    let response = response?;
 
-    if let Some(error) = response.pointer("/error/message").and_then(Value::as_str) {
-        bail!("Codex rejected the session request: {error}");
+    // A fork response still leaves a live writer in this app-server. Let EOF
+    // flush and close it before handing the new thread to another process.
+    // Also wait for stdout to close: the configured CLI may wrap Codex in Node.
+    drop(stdin);
+    let shutdown_deadline = Instant::now() + RPC_TIMEOUT;
+    let shutdown = (|| -> anyhow::Result<()> {
+        loop {
+            if let Some(status) = child.try_wait()? {
+                if !status.success() {
+                    bail!("Codex app-server exited with {status}");
+                }
+                if reader.is_finished() {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= shutdown_deadline {
+                bail!("Codex app-server did not finish closing its session");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if shutdown.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
+    if reader.is_finished() {
+        let _ = reader.join();
+    }
+    let response = response?;
+    shutdown?;
     Ok(response)
+}
+
+/// Create the fork outside the source session's resident app-server. Returning
+/// only after this process exits makes the cursor immediately resumable.
+pub(crate) fn fork_session_at_turn(
+    binary: &Path,
+    cwd: &Path,
+    thread_id: &str,
+    last_turn_id: &str,
+) -> anyhow::Result<ProviderResumeCursor> {
+    let response = app_server_request_in(
+        binary,
+        cwd,
+        json!({
+            "method": "thread/fork",
+            "id": 1,
+            "params": {
+                "threadId": thread_id,
+                "lastTurnId": last_turn_id,
+                "cwd": cwd,
+                "excludeTurns": true,
+                "deferGoalContinuation": true
+            }
+        }),
+    )?;
+    let thread_id = response
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow!("Codex returned no forked thread ID."))?;
+    Ok(ProviderResumeCursor::Codex {
+        thread_id: thread_id.to_owned(),
+    })
 }
 
 fn title_from_prompt(prompt: &str) -> Option<String> {

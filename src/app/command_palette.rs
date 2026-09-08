@@ -1753,11 +1753,7 @@ impl Waku {
                                 .flex()
                                 .items_center()
                                 .gap(px(7.0))
-                                .child(icon(
-                                    provider_icon(provider),
-                                    13.0,
-                                    provider_color(&theme, provider),
-                                ))
+                                .child(provider_mark(&theme, provider, 13.0, provider_color(&theme, provider)))
                                 .child(
                                     div()
                                         .text_size(sp(12.5))
@@ -1783,11 +1779,7 @@ impl Waku {
                                 .cursor_default()
                                 .hover(|button| button.bg(theme.overlay))
                                 .active(|button| button.opacity(0.82))
-                                .child(icon(
-                                    provider_icon(provider),
-                                    13.0,
-                                    provider_color(&theme, provider),
-                                ))
+                                .child(provider_mark(&theme, provider, 13.0, provider_color(&theme, provider)))
                                 .child(
                                     div()
                                         .text_size(sp(12.5))
@@ -1829,9 +1821,15 @@ impl Waku {
                     PaletteIcon::Asset(_) => theme.text_secondary,
                     PaletteIcon::Provider(provider) => provider_color(&theme, provider),
                 };
-                let icon_path = match item.icon {
-                    PaletteIcon::Asset(path) => path,
-                    PaletteIcon::Provider(provider) => provider_icon(provider),
+                // A provider row renders through `provider_mark` so OpenCode 2
+                // keeps its badge; an asset row stays a plain tinted icon.
+                let row_mark = match item.icon {
+                    PaletteIcon::Asset(path) => {
+                        icon(path, 16.0, icon_color).into_any_element()
+                    }
+                    PaletteIcon::Provider(provider) => {
+                        provider_mark(&theme, provider, 16.0, icon_color).into_any_element()
+                    }
                 };
                 let importing = match &item.action {
                     PaletteAction::ResumeProviderSession(summary) => self
@@ -1890,7 +1888,7 @@ impl Waku {
                                 .child(if importing {
                                     motion::spin(icon("icons/loader-circle.svg", 16.0, icon_color))
                                 } else {
-                                    icon(icon_path, 16.0, icon_color).into_any_element()
+                                    row_mark
                                 }),
                         )
                         .child(
