@@ -1465,7 +1465,8 @@ fn handle_pi_message(
                 output,
                 failed,
                 complete,
-            );
+            )
+            .with_tool_name(tool_name);
             let _ = events.send(DriverEvent::RichActivity(item));
             if complete && let Some(id) = id {
                 state.tools.remove(&id);

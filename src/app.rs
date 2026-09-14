@@ -226,7 +226,7 @@ impl SettingsPage {
     /// its navigation entry points. Keeping this decision on the page itself
     /// makes the Settings sidebar and command palette use the same gate.
     fn is_visible_in_navigation(self) -> bool {
-        self != Self::ComputerUse || cfg!(all(debug_assertions, target_os = "macos"))
+        self != Self::ComputerUse || cfg!(debug_assertions)
     }
 }
 
@@ -932,7 +932,8 @@ struct ComputerUsePreview {
     target: Option<ComputerTarget>,
     phase: ComputerUsePhase,
     visible: bool,
-    screenshot: Option<Arc<gpui::Image>>,
+    frames: crate::computer_use::PreviewFrames<crate::computer_use::PreviewImage>,
+    decode_task: Option<gpui::Task<()>>,
 }
 
 #[derive(Debug, Default)]
@@ -1019,6 +1020,12 @@ struct ActivityScrollViewport {
     follow_tail: Rc<Cell<bool>>,
     last_scrolled: Rc<Cell<Option<Pixels>>>,
     last_max_offset: Rc<Cell<Option<Pixels>>>,
+}
+
+#[derive(Clone, Default)]
+struct UserMessageScrollViewport {
+    scroll_handle: ScrollHandle,
+    scrollbar: Rc<ScrollbarState>,
 }
 
 impl Default for ActivityScrollViewport {
@@ -1346,6 +1353,8 @@ pub struct Waku {
     right_panel_rendered_width: f32,
     fps_counter_visible: bool,
     panel_resize_drag: Option<PanelResizeDrag>,
+    /// Window-relative PiP position, independent of incoming preview frames.
+    computer_use_preview_position: Option<gpui::Point<Pixels>>,
     right_panel_session_states: HashMap<Uuid, RightPanelSessionState>,
     right_panel_surfaces: Vec<RightPanelSurface>,
     right_panel_active_surface: Option<usize>,
@@ -1547,6 +1556,8 @@ pub struct Waku {
     /// Parsed markdown per assistant message, keeping each response's
     /// incremental parse and flattened blocks alive across frames.
     message_markdown: RefCell<HashMap<Uuid, MarkdownView>>,
+    /// Stable offsets for capped user bubbles, including across virtualized row rebuilds.
+    user_message_viewports: RefCell<HashMap<Uuid, UserMessageScrollViewport>>,
     /// Parsed markdown for reasoning activities, keyed by stable activity id.
     activity_markdown: RefCell<HashMap<Uuid, MarkdownView>>,
     /// Byte offsets live reasoning peeks render from, slid forward as the
@@ -2884,6 +2895,7 @@ impl Waku {
                 },
                 fps_counter_visible: false,
                 panel_resize_drag: None,
+                computer_use_preview_position: None,
                 right_panel_session_states: HashMap::new(),
                 right_panel_surfaces: Vec::new(),
                 right_panel_active_surface: None,
@@ -2994,6 +3006,7 @@ impl Waku {
                 transcript_scrollbar_dragging: Cell::new(false),
                 transcript_layout_width: Cell::new(Pixels::ZERO),
                 message_markdown: RefCell::new(HashMap::new()),
+                user_message_viewports: RefCell::new(HashMap::new()),
                 activity_markdown: RefCell::new(HashMap::new()),
                 reasoning_window_starts: RefCell::new(HashMap::new()),
                 activity_scroll_viewports: RefCell::new(HashMap::new()),

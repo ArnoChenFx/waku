@@ -606,12 +606,10 @@ fn perform_provider_rewind(
         }
         // Unreachable through the UI, which hides rewinding for providers that
         // answer `supports_conversation_rollback` with false.
-        ProviderKind::Fx | ProviderKind::Kimi | ProviderKind::OpenCode2 => {
-            Err(anyhow::anyhow!(tr!(
-                "errors.provider_turn_branching_unsupported",
-                provider = provider.display_name()
-            )))
-        }
+        ProviderKind::Fx | ProviderKind::Kimi => Err(anyhow::anyhow!(tr!(
+            "errors.provider_turn_branching_unsupported",
+            provider = provider.display_name()
+        ))),
     }
 }
 
@@ -849,7 +847,10 @@ fn perform_response_fork(mut request: ResponseForkRequest) -> Result<PreparedRes
                     ));
                 };
                 let binary = request.binary.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(tr!("errors.provider_not_installed", provider = "OpenCode 2"))
+                    anyhow::anyhow!(tr!(
+                        "errors.provider_not_installed",
+                        provider = "OpenCode 2"
+                    ))
                 })?;
                 Ok((
                     request
@@ -1643,7 +1644,7 @@ impl Waku {
             return provider.short_name().to_owned();
         };
         self.provider_probe(provider)
-            .and_then(|probe| probe.models.iter().find(|candidate| candidate.id == model))
+            .and_then(|probe| probe.model(model))
             .map(|candidate| candidate.name.clone())
             .unwrap_or_else(|| model.to_owned())
     }
@@ -1653,10 +1654,16 @@ impl Waku {
         session: &AgentSession,
     ) -> Option<&ProviderModel> {
         let model = self.model_for_session(session)?;
-        self.provider_probe(session.provider)?
-            .models
-            .iter()
-            .find(|candidate| candidate.id == model)
+        self.provider_probe(session.provider)?.model(model)
+    }
+
+    pub(super) fn catalog_model_id_for_session<'a>(
+        &'a self,
+        session: &'a AgentSession,
+    ) -> Option<&'a str> {
+        self.model_metadata_for_session(session)
+            .map(|model| model.id.as_str())
+            .or_else(|| self.model_for_session(session))
     }
 
     pub(super) fn selected_transcript_blocks(&self) -> &[TranscriptBlock] {
@@ -2632,7 +2639,7 @@ impl Waku {
                 .map(|model| model.id.clone())
         });
         let model_metadata = self.model_metadata_for_session(session);
-        let reasoning_effort = session.reasoning_effort.clone().filter(|effort| {
+        let mut reasoning_effort = session.reasoning_effort.clone().filter(|effort| {
             model_metadata.is_some_and(|model| {
                 model
                     .reasoning_efforts
@@ -2640,7 +2647,7 @@ impl Waku {
                     .any(|option| option.id == *effort)
             })
         });
-        let service_tier = session.service_tier.clone().filter(|tier| {
+        let mut service_tier = session.service_tier.clone().filter(|tier| {
             tier == "default"
                 || model_metadata.is_some_and(|model| {
                     model.service_tiers.iter().any(|option| option.id == *tier)
@@ -2654,6 +2661,25 @@ impl Waku {
                     .any(|option| option.id == *window)
             })
         });
+        if session.provider == ProviderKind::Cursor
+            && let Some(requested) = model.as_deref()
+            && let Some(probe) = self.provider_probe(session.provider)
+            && let Some(matched) =
+                waku_protocol::model_catalog::cursor_catalog_model(&probe.models, requested)
+        {
+            if reasoning_effort.is_none() {
+                reasoning_effort = waku_protocol::model_catalog::cursor_suffix_reasoning_effort(
+                    &matched.suffix,
+                    &matched.model.reasoning_efforts,
+                );
+            }
+            if service_tier.is_none() {
+                service_tier = waku_protocol::model_catalog::cursor_suffix_service_tier(
+                    &matched.suffix,
+                    &matched.model.service_tiers,
+                );
+            }
+        }
         SessionOptions {
             mode: session.runtime_mode,
             model,
@@ -2797,7 +2823,7 @@ impl Waku {
                 service_tier,
                 context_window,
                 agent_preset,
-                computer_use_enabled: cfg!(target_os = "macos") && self.state.computer_use_enabled,
+                computer_use_enabled: self.state.computer_use_enabled,
                 provider_cursor: session.provider_cursor.clone(),
             },
             event_wake: self.event_wake_tx.clone(),

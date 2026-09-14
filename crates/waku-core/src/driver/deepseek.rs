@@ -830,7 +830,8 @@ fn handle_tool_call(
         presented,
         false,
         false,
-    );
+    )
+    .with_tool_name(data.get("name").and_then(Value::as_str));
     let _ = events.send(DriverEvent::RichActivity(item));
 }
 
@@ -873,7 +874,8 @@ fn handle_tool_result(
             .unwrap_or(false);
     let item = activity::tool_activity(
         call_id, kind, title, arguments, output, presented, failed, true,
-    );
+    )
+    .with_tool_name(stored.as_ref().map(|tool| tool.name.as_str()));
     let _ = events.send(DriverEvent::RichActivity(item));
 }
 
