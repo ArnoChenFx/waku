@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import type {
   AgentSession,
+  GoalOperation,
   MessageAttachment,
   PendingPermission,
   PendingUserInput,
@@ -62,6 +63,9 @@ export interface MobileRuntime {
 }
 
 interface RuntimeEntry extends MobileRuntime {
+  /** Latest full projection, retained while subscribed even if the screen's
+   * query is evicted. Never fall back to the snapshot captured on attach. */
+  session: AgentSession;
   lastDriverError: string | null;
   unsubscribe: () => void;
   /** Buffered runtime events awaiting the next commit. */
@@ -110,6 +114,7 @@ interface RuntimeContextValue {
     isolated: boolean,
     prompt: string,
     options?: NewSessionOptions,
+    providerPromptOverride?: string,
   ) => Promise<AgentSession>;
   cancel: (sessionId: string) => Promise<void>;
   respond: (sessionId: string, requestId: string, optionId: string) => Promise<void>;
@@ -119,6 +124,7 @@ interface RuntimeContextValue {
     answers: UserInputAnswer[],
   ) => Promise<void>;
   updateSessionOptions: (sessionId: string, changes: SessionOptionChanges) => Promise<void>;
+  sendGoalOperation: (session: AgentSession, operation: GoalOperation) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   removeQueuedMessage: (sessionId: string, messageId: string) => Promise<void>;
@@ -167,6 +173,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
   const writeSessionCache = useCallback((session: AgentSession) => {
     const profileId = daemon.activeProfile?.id;
     if (!profileId) return;
+    const entry = entries.current.get(session.id);
+    if (entry) entry.session = session;
     queryClient.setQueryData(daemonKeys.session(profileId, session.id), session);
     queryClient.setQueryData<TaskState>(daemonKeys.taskState(profileId), (current) => {
       if (!current) return current;
@@ -201,11 +209,15 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     if (!client || !profileId) throw new Error('Waku daemon is disconnected');
     const cached = queryClient.getQueryData<AgentSession>(
       daemonKeys.session(profileId, sessionId),
-    );
+    ) ?? entries.current.get(sessionId)?.session;
     if (cached) return cached;
-    const hydrated = await hydrateSession(client, sessionId);
+    // Share the screen's in-flight hydration. An independent fetch could
+    // finish after subscription and overwrite events already applied live.
+    const hydrated = await queryClient.fetchQuery({
+      queryKey: daemonKeys.session(profileId, sessionId),
+      queryFn: () => hydrateSession(client, sessionId),
+    });
     if (!hydrated) throw new Error('This task no longer exists on the daemon');
-    queryClient.setQueryData(daemonKeys.session(profileId, sessionId), hydrated);
     return hydrated;
   }, [daemon.activeProfile?.id, daemon.client, queryClient]);
 
@@ -310,6 +322,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     if (existing) return existing;
 
     const entry: RuntimeEntry = {
+      session,
       runtimeId,
       supportsSteer,
       starting,
@@ -410,7 +423,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       if (!batch.length) return;
       const key = daemonKeys.session(profileId, session.id);
       const state: FlushState = {
-        current: queryClient.getQueryData<AgentSession>(key) ?? session,
+        current: queryClient.getQueryData<AgentSession>(key) ?? entry.session,
         mutated: false,
         settled: false,
         removeRuntime: false,
@@ -493,11 +506,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     if (pending) return pending;
 
     const request = (async () => {
+      // The screen may still be displaying a list placeholder. Its empty
+      // arrays are not a transcript, so hydrate before replaying any events.
+      const hydrated = await loadFullSession(session.id);
       const attached = await attachDaemonSession(client, session.id);
       if (!client.connected || !attached) return false;
       const current = queryClient.getQueryData<AgentSession>(
         daemonKeys.session(profileId, session.id),
-      ) ?? session;
+      ) ?? hydrated;
       subscribe(current, attached.runtimeId, attached.supportsSteer, false);
       return true;
     })().finally(() => {
@@ -505,7 +521,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     });
     attachRequests.current.set(session.id, request);
     return request;
-  }, [daemon.activeProfile?.id, daemon.client, daemon.phase, queryClient, subscribe]);
+  }, [daemon.activeProfile?.id, daemon.client, daemon.phase, loadFullSession, queryClient, subscribe]);
 
   const sendPrompt = useCallback(async (
     inputSession: AgentSession,
@@ -672,6 +688,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     isolated: boolean,
     prompt: string,
     options: NewSessionOptions = {},
+    providerPromptOverride?: string,
   ): Promise<AgentSession> => {
     const profileId = daemon.activeProfile?.id;
     if (!profileId || !daemon.client || daemon.phase !== 'connected') {
@@ -681,7 +698,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
     cacheSession(draft);
     const saved = await persistOrdered(draft);
     try {
-      return await sendPrompt(saved, prompt);
+      return await sendPrompt(saved, prompt, [], providerPromptOverride);
     } catch (cause) {
       setErrors((values) => ({ ...values, [saved.id]: errorMessage(cause) }));
       return queryClient.getQueryData<AgentSession>(
@@ -689,6 +706,60 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       ) ?? saved;
     }
   }, [cacheSession, daemon.activeProfile?.id, daemon.client, daemon.phase, persistOrdered, queryClient, sendPrompt]);
+
+  /** Local /goal commands use the native provider operation without adding
+   * a user prompt. A fresh task still needs a subscribed provider runtime;
+   * its goalUpdated/turnStarted events supply the authoritative state. */
+  const sendGoalOperation = useCallback(async (inputSession: AgentSession, operation: GoalOperation) => {
+    const client = daemon.client;
+    if (!client || daemon.phase !== 'connected') throw new Error('Waku daemon is disconnected');
+    let current = await loadFullSession(inputSession.id);
+    if (current.provider !== 'codex') throw new Error('Goals require Codex');
+    if (!entries.current.has(current.id)) await attachSession(current);
+    let runtime = entries.current.get(current.id);
+    if (!runtime) {
+      const state = await loadTaskState(client);
+      const project = state.projects.find((item) => item.id === current.project_id);
+      if (!project) throw new Error('This task’s project is no longer available on the daemon');
+      const settings = await loadDaemonSettings(client);
+      const probe = await probeProvider(client, current.provider, settings);
+      if (!probe.installed || !probe.path) throw new Error('Codex is not installed on the daemon host');
+      current = await materializeWorktree(
+        client, current, project.path,
+        operation.kind === 'set' ? operation.objective || 'goal' : 'goal',
+      );
+      cacheSession(current);
+      current = await persistOrdered(current);
+      const runtimeId = Crypto.randomUUID();
+      runtime = subscribe(current, runtimeId);
+      try {
+        const response = await client.request({
+          type: 'start',
+          options: {
+            provider: current.provider,
+            binary: probe.path,
+            cwd: sessionCwd(current, project),
+            mode: current.runtime_mode,
+            model: current.model ?? null,
+            reasoningEffort: current.reasoning_effort ?? null,
+            serviceTier: current.service_tier ?? null,
+            contextWindow: current.context_window ?? null,
+            agentPreset: current.agent_preset ?? null,
+            computerUseEnabled: false,
+            providerCursor: current.provider_cursor as never,
+          },
+        }, current.id, runtimeId);
+        if (response.type !== 'started') throw new Error('The daemon could not start Codex');
+        runtime.supportsSteer = response.supportsSteer;
+        runtime.starting = false;
+        setRuntimes((values) => ({ ...values, [current.id]: publicRuntime(runtime!) }));
+      } catch (cause) {
+        removeRuntime(current.id);
+        throw cause;
+      }
+    }
+    await client.request({ type: 'goal', operation }, current.id, runtime.runtimeId);
+  }, [attachSession, cacheSession, daemon.client, daemon.phase, loadFullSession, persistOrdered, removeRuntime, subscribe]);
 
   const cancel = useCallback(async (sessionId: string) => {
     const client = daemon.client;
@@ -931,6 +1002,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }) {
       respond,
       respondUserInput,
       updateSessionOptions,
+      sendGoalOperation,
       renameSession,
       deleteSession,
       removeQueuedMessage,

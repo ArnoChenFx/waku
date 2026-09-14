@@ -21,16 +21,21 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppSymbol } from './app-symbol';
+import { AttachmentTile } from './attachment-tile';
 import { ComposerAccessMenu } from './composer-access-menu';
+import { ComposerContextPicker } from './composer-context-picker';
+import { useComposerLocalCommands } from './composer-command-sheets';
 import {
-  ComposerAttachmentMenu,
+  ComposerAddMenu,
   type ComposerAttachmentSource,
-} from './composer-attachment-menu';
+} from './composer-add-menu';
 import { ComposerTextInput } from './composer-text-input';
 import type { ComposerTextInputProps } from './composer-text-input.types';
 import { GlassSurface, liquidGlass } from './glass-surface';
-import { ModelSheet } from './session-option-sheets';
+import { ModelTraitsSheet } from './session-option-sheets';
 import { MonoFont, NativeTint, Radius } from '@/constants/theme';
+import { useProviderModels, useTaskState } from '@/hooks/use-daemon-data';
+import { useComposerPicker } from '@/hooks/use-composer-picker';
 import { useSyncedComposerDraft } from '@/hooks/use-synced-composer-draft';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -39,7 +44,9 @@ import {
   type LocalAttachmentFile,
 } from '@/lib/attachments';
 import { useDaemon } from '@/lib/daemon-context';
-import { sessionBusy } from '@/lib/mobile-runtime';
+import { sessionBusy, sessionCwd } from '@/lib/mobile-runtime';
+import { composerProviderPrompt } from '@/lib/composer-completion';
+import { modelHasConfigurableTraits } from '@/lib/model-traits';
 import { useRuntime } from '@/lib/runtime-context';
 import { isDaemonDisconnectError } from '@/lib/runtime-errors';
 
@@ -186,7 +193,12 @@ export function MobileComposer({
   const [importingAttachments, setImportingAttachments] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const [traitsSheetOpen, setTraitsSheetOpen] = useState(false);
+  const modelProbe = useProviderModels(session.provider);
+  const models = modelProbe.data?.models ?? [];
+  const activeModel = session.model
+    ? models.find((item) => item.id === session.model)
+    : models.find((item) => item.is_default) ?? models[0];
   const busy = sessionBusy(session);
   const liveRuntime = runtime.runtimes[session.id];
   const canSteer = busy && Boolean(liveRuntime?.supportsSteer) && session.status !== 'connecting';
@@ -200,6 +212,8 @@ export function MobileComposer({
     : runtimeError;
   const visibleError = visibleLocalError || visibleRuntimeError;
   const queued = session.queued_messages ?? [];
+  const taskState = useTaskState();
+  const project = taskState.data?.projects.find((item) => item.id === session.project_id);
 
   useEffect(() => setLocalError(null), [session.id]);
   useEffect(() => {
@@ -218,6 +232,31 @@ export function MobileComposer({
       setAttachments(synchronized.attachments);
     },
     flushOnUnmount: true,
+  });
+  const contextPicker = useComposerPicker({
+    text: draft,
+    onChangeText: (value) => {
+      draftSync.markEdited();
+      setDraft(value);
+    },
+    provider: session.provider,
+    root: project ? sessionCwd(session, project) : null,
+    reported: session.available_commands,
+    contextKey: session.id,
+  });
+  const localCommands = useComposerLocalCommands({
+    provider: session.provider,
+    model: activeModel,
+    serviceTier: session.service_tier,
+    runtimeMode: session.runtime_mode,
+    goal: session.thread_goal,
+    contextKey: session.id,
+    onServiceTier: (serviceTier) => runtime.updateSessionOptions(session.id, { serviceTier }),
+    onGoal: (operation) => runtime.sendGoalOperation(session, operation),
+    onClear: () => {
+      draftSync.markEdited();
+      setDraft('');
+    },
   });
   const activeSessionId = useRef(session.id);
   activeSessionId.current = session.id;
@@ -325,10 +364,13 @@ export function MobileComposer({
     ) return;
     setSubmitting(true);
     setLocalError(null);
-    onSubmitted?.();
     try {
-      if (canSteer) await runtime.steerPrompt(session, prompt, submittedAttachments);
-      else await runtime.sendPrompt(session, prompt, submittedAttachments);
+      const commands = prompt.startsWith('/') ? await contextPicker.getCommands() : [];
+      if (await localCommands.execute(prompt, commands)) return;
+      const providerPrompt = composerProviderPrompt(session.provider, prompt, commands, submittedAttachments);
+      onSubmitted?.();
+      if (canSteer) await runtime.steerPrompt(session, prompt, submittedAttachments, providerPrompt);
+      else await runtime.sendPrompt(session, prompt, submittedAttachments, providerPrompt);
       draftSync.removeSubmittedDraft();
       setDraft('');
       setAttachments([]);
@@ -438,6 +480,7 @@ export function MobileComposer({
       ))}
 
       <ComposerCard
+        {...contextPicker.inputProps}
         accessibilityLabel="Message agent"
         beforeInput={attachments.length || importingAttachments ? (
           <ScrollView
@@ -446,42 +489,19 @@ export function MobileComposer({
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.attachmentStrip}>
             {attachments.map((attachment, index) => (
-              <Pressable
-                accessibilityLabel={`Remove ${attachment.name}`}
-                accessibilityRole="button"
-                disabled={submitting}
+              <AttachmentTile
+                attachment={attachment}
+                compact
                 key={`${attachment.blob_reference ?? attachment.path}:${index}`}
-                onPress={() => {
+                onRemove={() => {
                   draftSync.markEdited();
                   setAttachments((current) => current.filter((_, item) => item !== index));
                 }}
-                style={({ pressed }) => [
-                  styles.attachmentChip,
-                  { backgroundColor: theme.overlayStrong, opacity: pressed ? 0.6 : 1 },
-                ]}>
-                <AppSymbol
-                  name={{
-                    ios: attachment.is_image ? 'photo' : 'doc',
-                    android: attachment.is_image ? 'image' : 'description',
-                    web: 'description',
-                  }}
-                  size={13}
-                  tintColor={theme.textSecondary}
-                />
-                <Text
-                  numberOfLines={1}
-                  style={[styles.attachmentName, { color: theme.textSecondary }]}>
-                  {attachment.name}
-                </Text>
-                <AppSymbol
-                  name={{ ios: 'xmark', android: 'close', web: 'close' }}
-                  size={9}
-                  tintColor={theme.textTertiary}
-                />
-              </Pressable>
+                removeDisabled={submitting}
+              />
             ))}
             {importingAttachments && (
-              <View style={[styles.attachmentChip, { backgroundColor: theme.overlayStrong }]}>
+              <View style={[styles.attachmentLoading, { backgroundColor: theme.inset, borderColor: theme.border }]}>
                 <ActivityIndicator color={theme.textSecondary} size="small" />
                 <Text style={[styles.attachmentName, { color: theme.textSecondary }]}>Attaching…</Text>
               </View>
@@ -491,9 +511,10 @@ export function MobileComposer({
         editable={!disconnected && !submitting}
         left={(
           <>
-            <ComposerAttachmentMenu
+            <ComposerAddMenu
               disabled={disconnected || submitting || importingAttachments}
               onChoose={(source) => void chooseAttachment(source)}
+              onChooseContext={contextPicker.open}
             />
             <ComposerAccessMenu
               mode={session.runtime_mode}
@@ -504,11 +525,13 @@ export function MobileComposer({
         placeholder={placeholder}
         right={(
           <>
-            <ComposerIconButton
-              icon={{ ios: 'speedometer', android: 'speed', web: 'speed' }}
-              label="Model"
-              onPress={() => setModelSheetOpen(true)}
-            />
+            {activeModel && modelHasConfigurableTraits(activeModel) && (
+              <ComposerIconButton
+                icon={{ ios: 'speedometer', android: 'speed', web: 'speed' }}
+                label="Model options"
+                onPress={() => setTraitsSheetOpen(true)}
+              />
+            )}
             {busy && (
               <Pressable
                 accessibilityLabel="Stop agent"
@@ -542,10 +565,6 @@ export function MobileComposer({
           </>
         )}
         value={draft}
-        onChangeText={(value) => {
-          draftSync.markEdited();
-          setDraft(value);
-        }}
         onPasteError={(message) => {
           setLocalError(message);
           void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -558,14 +577,21 @@ export function MobileComposer({
         }}
       />
 
-      <ModelSheet
-        model={session.model ?? null}
-        onApply={(selection) => applyOptions(selection)}
-        onDismiss={() => setModelSheetOpen(false)}
-        provider={session.provider}
-        reasoningEffort={session.reasoning_effort ?? null}
-        visible={modelSheetOpen}
-      />
+      {activeModel && (
+        <ModelTraitsSheet
+          model={activeModel}
+          onApply={applyOptions}
+          onDismiss={() => setTraitsSheetOpen(false)}
+          selection={{
+            reasoningEffort: session.reasoning_effort ?? null,
+            serviceTier: session.service_tier ?? null,
+            contextWindow: session.context_window ?? null,
+          }}
+          visible={traitsSheetOpen}
+        />
+      )}
+      {localCommands.sheets}
+      <ComposerContextPicker {...contextPicker.picker} />
     </View>
   );
 }
@@ -843,17 +869,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 8,
   },
-  attachmentStrip: { gap: 6, paddingHorizontal: 4, paddingTop: 4 },
-  attachmentChip: {
+  attachmentStrip: { gap: 8, paddingHorizontal: 4, paddingTop: 4, paddingBottom: 6 },
+  attachmentLoading: {
     alignItems: 'center',
-    borderRadius: Radius.small,
-    flexDirection: 'row',
-    gap: 6,
-    height: 30,
-    maxWidth: 190,
-    paddingHorizontal: 9,
+    borderRadius: 9,
+    borderWidth: 1,
+    justifyContent: 'center',
+    gap: 7,
+    height: 80,
+    width: 80,
   },
-  attachmentName: { flexShrink: 1, fontSize: 12, fontWeight: '600' },
+  attachmentName: { fontSize: 11.5 },
   toolbar: { alignItems: 'center', flexDirection: 'row', marginTop: 2 },
   toolbarSpacer: { flex: 1 },
   cluster: { alignItems: 'center', flexDirection: 'row', gap: 2 },
