@@ -226,7 +226,7 @@ impl SettingsPage {
     /// its navigation entry points. Keeping this decision on the page itself
     /// makes the Settings sidebar and command palette use the same gate.
     fn is_visible_in_navigation(self) -> bool {
-        self != Self::ComputerUse || cfg!(debug_assertions)
+        self != Self::ComputerUse || crate::computer_use::is_available()
     }
 }
 
@@ -2203,7 +2203,7 @@ impl Waku {
         let (event_wake_tx, event_wake_events) = smol::channel::bounded(1);
         let (task_state_sync_tx, task_state_sync_events) = unbounded();
         #[cfg(target_os = "macos")]
-        {
+        if crate::computer_use::is_available() {
             let computer_permission_tx = computer_permission_tx.clone();
             let event_wake = event_wake_tx.clone();
             let daemon = daemon.client();
