@@ -1210,6 +1210,16 @@ pub struct Waku {
     branch_picker_highlight: Option<usize>,
     branch_picker_list_state: ListState,
     branch_picker_row_cache: RefCell<Vec<crate::git_branch::BranchEntry>>,
+    /// The project pickers' shared filter field. The empty-state headline
+    /// and the composer chip never have their panels open together.
+    project_search: Entity<TextInput>,
+    /// Keyboard cursor over the project picker's rows, then its pinned
+    /// actions. `None` means the keyboard has not moved yet.
+    project_picker_highlight: Option<usize>,
+    project_picker_list_state: ListState,
+    project_picker_row_cache: RefCell<Vec<Uuid>>,
+    project_picker_scrollbar: Rc<ScrollbarState>,
+    project_picker_matcher: RefCell<nucleo_matcher::Matcher>,
     /// Git subprocess results per concrete workspace path. Render only reads
     /// this in-memory cache; misses are fulfilled on the background executor.
     branch_snapshots: QueryCache<PathBuf, Result<Option<BranchSnapshot>, String>>,
@@ -1620,6 +1630,7 @@ mod drafts;
 mod file_search;
 mod goal_dialog;
 mod image_preview;
+mod project_picker;
 mod render;
 mod right_panel;
 mod runtime;
@@ -1645,6 +1656,7 @@ pub use commit_dialog::init as init_commit_dialog_keys;
 use components::*;
 pub use goal_dialog::init as init_goal_dialog_keys;
 pub use image_preview::init as init_image_preview_keys;
+use project_picker::ProjectPickerSite;
 pub use settings::init as init_settings_keys;
 pub use sidebar::init as init_sidebar_keys;
 use sidebar::{SidebarGroup, SidebarRow};
@@ -1999,6 +2011,11 @@ impl Waku {
                 .clear_on_escape()
                 .placeholder(tr!("input.new_branch_name"))
         });
+        let project_search = cx.new(|cx| {
+            TextInput::new(window, cx)
+                .clear_on_escape()
+                .placeholder(tr!("input.search_projects"))
+        });
         let settings_search = cx.new(|cx| {
             TextInput::new(window, cx)
                 .clear_on_escape()
@@ -2244,6 +2261,7 @@ impl Waku {
         let sidebar_list_state = ListState::new(0, ListAlignment::Top, px(256.0));
         let usage_projects_list = ListState::new(0, ListAlignment::Top, px(256.0));
         let branch_picker_list_state = ListState::new(0, ListAlignment::Top, px(152.0));
+        let project_picker_list_state = ListState::new(0, ListAlignment::Top, px(152.0));
         let transcript_is_scrolled = Rc::new(Cell::new(false));
         let transcript_anchor_following = Rc::new(Cell::new(false));
         let transcript_tail_recheck = Rc::new(Cell::new(false));
@@ -2538,6 +2556,21 @@ impl Waku {
             )
             .detach();
             cx.subscribe(
+                &project_search,
+                |this: &mut Self, search, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Edited) {
+                        if search.read(cx).content().trim().is_empty() {
+                            this.project_picker_highlight = None;
+                        } else {
+                            this.project_picker_highlight = Some(0);
+                            this.project_picker_list_state.scroll_to_reveal_item(0);
+                        }
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            cx.subscribe(
                 &branch_create_input,
                 |_: &mut Self, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Edited) {
@@ -2733,6 +2766,7 @@ impl Waku {
                 model_search,
                 branch_search,
                 branch_create_input,
+                project_search,
                 settings_search,
                 daemon_port_input,
                 daemon_origins_input,
@@ -2810,6 +2844,13 @@ impl Waku {
                 branch_picker_highlight: None,
                 branch_picker_list_state,
                 branch_picker_row_cache: RefCell::new(Vec::new()),
+                project_picker_highlight: None,
+                project_picker_list_state,
+                project_picker_row_cache: RefCell::new(Vec::new()),
+                project_picker_scrollbar: ScrollbarState::new(),
+                project_picker_matcher: RefCell::new(nucleo_matcher::Matcher::new(
+                    nucleo_matcher::Config::DEFAULT,
+                )),
                 branch_snapshots: QueryCache::new(MAX_CACHED_WORKSPACES),
                 visible_branch_snapshot: None,
                 branch_operation_pending: false,
