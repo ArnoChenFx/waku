@@ -55,6 +55,14 @@ impl Endpoint {
             .host_str()
             .ok_or_else(|| anyhow!("server URL {url} has no host"))?
             .to_owned();
+        // A server that binds every interface advertises the wildcard address,
+        // which names no reachable destination: connecting to `0.0.0.0` fails
+        // outright, so a perfectly healthy OpenCode service reads as down and
+        // every start attempt "exits without registering". Dial loopback.
+        let host = match host.as_str() {
+            "0.0.0.0" | "::" | "[::]" => "127.0.0.1".to_owned(),
+            _ => host,
+        };
         let port = parsed
             .port_or_known_default()
             .ok_or_else(|| anyhow!("server URL {url} has no port"))?;
@@ -621,6 +629,18 @@ mod tests {
         assert_eq!(endpoint.address(), "127.0.0.1:49374");
         // base64("opencode:secret")
         assert_eq!(endpoint.auth.as_deref(), Some("Basic b3BlbmNvZGU6c2VjcmV0"));
+    }
+
+    #[test]
+    fn a_wildcard_bind_address_is_dialled_as_loopback() {
+        // The OpenCode service binds every interface and advertises `0.0.0.0`,
+        // which is not a connectable destination, so the probe would read a
+        // healthy server as down.
+        let endpoint = Endpoint::basic("http://0.0.0.0:49374", "opencode", "secret").unwrap();
+        assert_eq!(endpoint.address(), "127.0.0.1:49374");
+
+        let ipv6 = Endpoint::basic("http://[::]:49374", "opencode", "secret").unwrap();
+        assert_eq!(ipv6.address(), "127.0.0.1:49374");
     }
 
     #[test]
