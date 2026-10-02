@@ -139,7 +139,8 @@ fn discover_codex(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand
 fn discover_opencode(binary: &Path, project_root: &Path) -> Option<Vec<SlashCommand>> {
     // The registry is directory-scoped, not session-scoped. Seed the new-task
     // composer too, without creating a disposable provider session.
-    let directory = std::fs::canonicalize(project_root).ok()?;
+    // `dunce` keeps the string identical to the one sessions are created with.
+    let directory = dunce::canonicalize(project_root).ok()?;
     let directory = directory.to_string_lossy();
     let service = crate::opencode_service::shared(binary).ok()?;
     let endpoint = service.endpoint();
@@ -699,7 +700,7 @@ mod tests {
             "---\ndescription: Catalog test\n---\nReply OK",
         )
         .unwrap();
-        let root = std::fs::canonicalize(root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
         let commands = discover(ProviderKind::OpenCode, &binary, &root).unwrap();
         for name in ["init", "review", "waku-catalog-smoke"] {
             assert!(

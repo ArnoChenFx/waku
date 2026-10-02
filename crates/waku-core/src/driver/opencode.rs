@@ -470,7 +470,12 @@ impl OpenCodeDriver {
         // trailing slash or a subdirectory silently yields zero sessions — and
         // a directory the service cannot resolve answers HTTP 500 with an
         // empty body rather than a readable error.
-        let directory = std::fs::canonicalize(&cwd)
+        //
+        // `dunce` rather than raw `canonicalize`: Windows' `\\?\E:\…`
+        // extended-length prefix makes the service register the workspace as
+        // a separate project from the same path spelled normally, so sessions
+        // opened from Waku never line up with the user's own CLI sessions.
+        let directory = dunce::canonicalize(&cwd)
             .with_context(|| {
                 format!(
                     "OpenCode needs a resolvable workspace directory, but {} could not be canonicalized",
@@ -3956,7 +3961,7 @@ mod tests {
         cleanup.sessions.push(a.session_id.clone());
         let (b, b_events) = start();
         cleanup.sessions.push(b.session_id.clone());
-        let directory = std::fs::canonicalize(&cleanup.directory)
+        let directory = dunce::canonicalize(&cleanup.directory)
             .unwrap()
             .to_string_lossy()
             .into_owned();

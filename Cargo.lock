@@ -8680,6 +8680,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "dirs",
+ "dunce",
  "libc",
  "nucleo-matcher",
  "objc2-foundation 0.3.2",
